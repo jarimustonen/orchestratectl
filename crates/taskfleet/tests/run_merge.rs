@@ -1,6 +1,6 @@
-//! Integration tests for `orchestratectl run merge` (issue
-//! `bundle-worktree-merge`). The merge backend is stubbed via `OCTL_MERGE_SH`
-//! so the tests exercise orchestratectl's integration — node resolution,
+//! Integration tests for `taskfleet run merge` (issue
+//! `bundle-worktree-merge`). The merge backend is stubbed via `TASKFLEET_MERGE_SH`
+//! so the tests exercise taskfleet's integration — node resolution,
 //! source resolution, terminal-report submission, failure handling — without
 //! a real git worktree, workmux, or tmux.
 
@@ -18,7 +18,7 @@ fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     c.env("TMUX_BIN", "/usr/bin/true");
     c
 }
@@ -54,7 +54,7 @@ fn forge_worker_node(home: &TempDir, run_id: &str, kind: &str, worktree: &Path, 
     std::fs::write(
         &node,
         format!(
-            r#"{{"kind":"{kind}","task":"x","worktree_path":"{}","branch":"{branch}","tmux_session":"octl","tmux_window_id":"@42"}}"#,
+            r#"{{"kind":"{kind}","task":"x","worktree_path":"{}","branch":"{branch}","tmux_session":"taskfleet","tmux_window_id":"@42"}}"#,
             worktree.display()
         ),
     )
@@ -122,7 +122,7 @@ fn successful_merge_submits_explicit_merge_report() {
     forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(v["data"]["merged"], true);
@@ -170,7 +170,7 @@ fn report_file_payload_is_submitted_with_marker() {
     .unwrap();
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
         "run",
@@ -220,7 +220,7 @@ fn typoed_advisory_field_merges_with_warning() {
     .unwrap();
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
         "run",
@@ -289,7 +289,7 @@ fn non_success_report_file_is_rejected() {
         std::fs::write(&report, body).unwrap();
         let merge_sh = fake_merge_sh(scratch.path(), 0, "");
         let out = bin(&home)
-            .env("OCTL_MERGE_SH", &merge_sh)
+            .env("TASKFLEET_MERGE_SH", &merge_sh)
             .args([
                 "--output",
                 "json",
@@ -335,7 +335,7 @@ fn bad_report_file_rejected_before_merge() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output",
             "json",
@@ -377,7 +377,7 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args(["--output", "json", "run", "merge", &run_id])
         .output()
         .expect("spawn");
@@ -405,7 +405,7 @@ fn dry_run_resolves_without_side_effects() {
     forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "should never run");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
         "run",
@@ -481,7 +481,7 @@ fn second_merge_on_terminal_run_is_run_already_terminal() {
 
     // First merge: succeeds and appends the explicit-merge report.
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(v["data"]["merged"], true);
@@ -493,7 +493,7 @@ fn second_merge_on_terminal_run_is_run_already_terminal() {
 
     // Second merge: refused up front with the clear terminal error, no spawn.
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -524,7 +524,7 @@ fn merge_on_cancelled_run_is_refused() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -557,7 +557,7 @@ fn terminal_failed_torn_down_is_run_already_terminal() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -581,7 +581,7 @@ fn nonterminal_missing_worktree_is_worktree_missing() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -598,7 +598,7 @@ fn nonterminal_missing_worktree_is_worktree_missing() {
 
 /// A `NotFound` from the merge-backend spawn is only re-attributed to a missing
 /// worktree when the worktree is ACTUALLY gone. With a present worktree but a
-/// bad `OCTL_MERGE_SH` override (nonexistent backend), the error must remain the
+/// bad `TASKFLEET_MERGE_SH` override (nonexistent backend), the error must remain the
 /// generic `merge_spawn_failed` — not a spurious `worktree_missing` (round-2
 /// review: the `NotFound` remap must not misattribute a missing backend).
 #[test]
@@ -610,7 +610,7 @@ fn missing_backend_with_live_worktree_is_merge_spawn_failed() {
 
     // Worktree present, but the backend path does not exist.
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", "/no/such/merge-backend.sh")
+        .env("TASKFLEET_MERGE_SH", "/no/such/merge-backend.sh")
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -653,7 +653,7 @@ fn terminal_but_unmerged_run_still_merges() {
     // The still-alive agent's `run merge` must PROCEED (worktree exists → the
     // guard falls through, so the reducer can adopt the merge).
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(
@@ -785,7 +785,7 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
     );
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
@@ -833,7 +833,7 @@ fn merge_defers_to_supervisor_when_report_adopted() {
     // No pre-terminalization: the node is live, so the explicit-merge report is
     // adopted and a supervisor owns teardown.
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+    let v = run_ok(bin(&home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
@@ -878,7 +878,7 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -904,7 +904,7 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
 // was mid-rebase made the checker fail with a spurious "uncommitted changes in
 // target". The fix moves that check inside the lock; a lock-acquisition timeout is
 // surfaced as a distinct, retryable `merge_in_progress` error. These two tests
-// drive the REAL bundled `scripts/merge.sh` (via `OCTL_MERGE_SH`) against a real
+// drive the REAL bundled `scripts/merge.sh` (via `TASKFLEET_MERGE_SH`) against a real
 // git repo + linked worktree; both exercised paths return before `workmux`, so
 // they need neither `workmux` nor a live tmux.
 
@@ -1039,7 +1039,7 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
     // Our merge waits on the lock, then times out (1s) — a serialization
     // conflict, surfaced as the distinct retryable code, NOT a dirty-tree error.
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
         .env("MERGE_LOCK_TIMEOUT", "1")
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
@@ -1094,7 +1094,7 @@ fn genuine_dirty_target_still_blocks() {
     std::fs::write(repo.join("USER-WORK.txt"), "human's uncommitted edit").unwrap();
 
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
@@ -1146,7 +1146,7 @@ fn concurrent_self_merge_waits_then_succeeds() {
     // block on the lock (never seeing the dirt), then land once the peer frees.
     let v = run_ok(
         bin(&home)
-            .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+            .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
             .env("PATH", path_with(&fakebin))
             .env("MERGE_LOCK_TIMEOUT", "30")
             .args([
@@ -1180,7 +1180,7 @@ fn downstream_exit_75_is_not_merge_in_progress() {
     // No lock holder, target clean — the merge reaches workmux, which exits 75.
     let fakebin = fake_workmux_dir(gitroot.path(), 75);
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .env("TASKFLEET_MERGE_SH", real_merge_sh(gitroot.path()))
         .env("PATH", path_with(&fakebin))
         .args([
             "--output", "json", "run", "merge", &run_id, "--source", "main",

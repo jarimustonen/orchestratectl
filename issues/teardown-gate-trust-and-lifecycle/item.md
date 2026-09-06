@@ -13,7 +13,7 @@ closed_by: claude
 
 # Harden teardown-gate trust boundary + preserved-worktree lifecycle
 
-_Source: crates/octl-cli/src/supervise/cleanup.rs_
+_Source: crates/taskfleet-cli/src/supervise/cleanup.rs_
 
 ## Description
 
@@ -38,7 +38,7 @@ already trusted `via`), and the realistic exploit is an agent destroying its
 OWN work (which it could do with `git branch -D` anyway), so it was deferred.
 
 Fix direction: reserve `via` / `cancelled` in the `node report` validator
-(`crates/octl-core/src/report.rs`) so only `run merge` / `run cancel` can stamp
+(`crates/taskfleet-core/src/report.rs`) so only `run merge` / `run cancel` can stamp
 them, OR derive the outcome from event provenance (distinct event kinds) rather
 than payload fields. `success` is already validation-required, so the
 missing-`success` loophole is closed; this is the remaining spoofable field.
@@ -50,7 +50,7 @@ Add tests: a plain `node report` cannot spoof `via: explicit-merge` /
 The blocked / unmerged path intentionally leaves the worktree registered in
 `git worktree list` and the branch in place. There is no follow-up lifecycle:
 
-- No `orchestratectl run status` / list surface showing "work preserved here:
+- No `taskfleet run status` / list surface showing "work preserved here:
   branch X, worktree Y" (today it is only a `cleanup.branch_preserved` event +
   supervisor stderr). Consider a manifest/projection field so a CLI view can
   render it.

@@ -7,7 +7,7 @@ priority: normal
 closed: 2026-06-29
 ---
 
-# Centralize --idempotency-key handling in octl-core::AppendOutcome
+# Centralize --idempotency-key handling in taskfleet-core::AppendOutcome
 
 ## Description
 
@@ -18,7 +18,7 @@ same semantics, and decentralizing it produced exactly the bug the
 discussion-cli review caught (the first cut of `discussion resolve`
 forgot to scan the log entirely).
 
-Land a shared API in `octl-core::events`, e.g.:
+Land a shared API in `taskfleet-core::events`, e.g.:
 
 ```rust
 pub enum AppendOutcome {

@@ -28,8 +28,8 @@ Every non-trivial claim is anchored to a `file:line` or an issue slug.
 2. **The agent** — a detached `claude`/`pi`/`aider` process running inside a tmux window/pane in its own git
    worktree. It is the distributed party whose state the whole system is trying to know. It communicates back
    through exactly **one** first-class channel: a terminal `node.report` event (via `run merge` or `node report`).
-3. **The supervisor** — one detached `orchestratectl supervise <run-id>` process per run
-   (`crates/octl-cli/src/supervise/mod.rs`). It owns the run's lifecycle: it watches the agent, synthesizes
+3. **The supervisor** — one detached `taskfleet supervise <run-id>` process per run
+   (`crates/taskfleet-cli/src/supervise/mod.rs`). It owns the run's lifecycle: it watches the agent, synthesizes
    terminal state when the agent doesn't report, rolls the run up to a terminal status, fires the completion
    hook, and tears the worktree/window/branch down.
 
@@ -37,15 +37,15 @@ The supervisor is the heart of the subsystem and the source of ~all cluster-A co
 
 ### A.2 The on-disk state model
 
-State lives under `~/.orchestratectl/runs/<run-id>/` as an **event log + folded projections**
-(`crates/octl-core/src/schema.rs`):
+State lives under `~/.taskfleet/runs/<run-id>/` as an **event log + folded projections**
+(`crates/taskfleet-core/src/schema.rs`):
 
 - **`events.jsonl`** — the append-only source of truth. Each line is an `Event { ts, seq, kind, run_id, node_id?,
   idempotency_key?, data }` (`schema.rs:841-860`). Event kinds handled by the reducer: `run.created`, `run.status`,
   `run.notified`, `node.created`, `node.status`, `node.report`, `node.retry`, `child.spawned`,
   `discussion.opened`, `discussion.resolved`, `spinoff.proposed`, `spinoff.approved`, `spinoff.rejected`,
   `orchestrator.decision`, `supervisor.attached`, `supervisor.exited`, `discuss.critical`
-  (verified against `crates/octl-core/src/reducer.rs`). Note `supervisor.started` / `supervisor.self-terminated`
+  (verified against `crates/taskfleet-core/src/reducer.rs`). Note `supervisor.started` / `supervisor.self-terminated`
   fall through the reducer catch-all to a **no-op** — they emit zero projection ops (`stalled.rs:126-129`).
 - **`manifest.json`** — folded run projection (`schema.rs:516-601`). Key fields: `status`, `lifecycle`, `kind`,
   `applied_seq` (the watermark), denormalized counters (`node_count`, `open_discussions`, `pending_spinoffs`),
@@ -72,7 +72,7 @@ class — invariant 4 in the root `CLAUDE.md` (`skill-progress-polling-wrong-fie
 
 ### A.3 The write pipeline: crash-atomic append-then-apply
 
-All mutation flows through `append_and_apply_*` in `crates/octl-core/src/events.rs`
+All mutation flows through `append_and_apply_*` in `crates/taskfleet-core/src/events.rs`
 (`append_and_apply_event:340`, `append_and_apply_unlocked:409`, `append_and_apply_idempotent:589`). The atomicity
 contract (root `CLAUDE.md` "State integrity invariants" 1–3):
 
@@ -80,7 +80,7 @@ contract (root `CLAUDE.md` "State integrity invariants" 1–3):
    only after every projection an event touches is fsynced. On the next lock acquisition, events with
    `seq > applied_seq` are replayed before any new append — so the log may run ahead of the projections, but the
    gap is always healed before the next writer observes stale state.
-2. **`LockedRun` witness** (`crates/octl-core/src/lock.rs:53-57`). A compile-time proof that the caller holds the
+2. **`LockedRun` witness** (`crates/taskfleet-core/src/lock.rs:53-57`). A compile-time proof that the caller holds the
    run's exclusive `flock`. Only `RunLock<Exclusive>::witness()` (`lock.rs:128-130`) can mint one; the unlocked
    append entry points require `&LockedRun`, so the type system — not a doc comment — enforces lock-before-write.
    The witness is `!Send + !Sync` (the `PhantomData<*const …>`, `lock.rs:54-56`) so the proof can't cross a thread.
@@ -213,7 +213,7 @@ or "progress" push. Everything else the parent wants to know it must *poll* (§A
 
 ### A.8 The read surface (cluster B): inference on the reader side too
 
-`run show` (`crates/octl-cli/src/run/show.rs`) and `run list` re-derive run health from the same kind of proxies,
+`run show` (`crates/taskfleet-cli/src/run/show.rs`) and `run list` re-derive run health from the same kind of proxies,
 under the shared lock, because there is no stored "run health" field:
 
 - **Supervisor liveness** — `SupervisorView::probe` reads `supervisor.pid` and resolves

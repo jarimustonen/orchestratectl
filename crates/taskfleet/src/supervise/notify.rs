@@ -46,14 +46,14 @@ use crate::run::from_core;
 /// (`n-0001`); mirrors `run wait`'s and `run merge`'s `DEFAULT_NODE_ID`.
 const DEFAULT_NODE_ID: &str = "n-0001";
 
-/// Cap on the `OCTL_SUMMARY` env value (bytes-ish, counted in chars). A
+/// Cap on the `TASKFLEET_SUMMARY` env value (bytes-ish, counted in chars). A
 /// `node.report` summary is arbitrary agent-authored text; an unbounded value
 /// risks `E2BIG` at `spawn` time, which would drop that fire's notification
 /// (the marker is still recorded afterwards, so it is not retried). Bounded
 /// well under the platform `ARG_MAX`/env ceiling with headroom for the rest of
 /// the environment.
 const SUMMARY_MAX_CHARS: usize = 4096;
-/// Cap on the `OCTL_RUN_TITLE` env value; a title is short by construction, but
+/// Cap on the `TASKFLEET_RUN_TITLE` env value; a title is short by construction, but
 /// bound it defensively for the same reason.
 const TITLE_MAX_CHARS: usize = 512;
 
@@ -111,7 +111,7 @@ pub fn maybe_fire(
         Ok(g) => g,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 run_id = %run_id,
                 error = %e,
                 "could not lock run to fire notify hook; will retry on a later tick"
@@ -129,7 +129,7 @@ pub fn maybe_fire(
         Ok(None) => { /* no marker yet — fire below */ }
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 run_id = %run_id,
                 error = %e,
                 "could not scan for run.notified marker; will retry on a later tick"
@@ -152,7 +152,7 @@ pub fn maybe_fire(
         // The hook already fired. Failing to record the marker only means a
         // restart may re-fire (at-least-once tolerates that). Surface it.
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             run_id = %run_id,
             error = %e,
             "notify hook fired but recording the run.notified marker failed (a restart may re-fire)"
@@ -186,7 +186,7 @@ pub fn maybe_fire_awaiting_input(
     let guard = match RunLock::acquire(&paths.lock()) {
         Ok(g) => g,
         Err(e) => {
-            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
                 "could not lock run to fire awaiting-input hook; will retry");
             return false;
         }
@@ -197,7 +197,7 @@ pub fn maybe_fire_awaiting_input(
         Ok(Some(m)) => m.status.is_terminal(),
         Ok(None) => return true,
         Err(e) => {
-            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
                 "could not re-read manifest for awaiting-input notification; will retry");
             return false;
         }
@@ -209,7 +209,7 @@ pub fn maybe_fire_awaiting_input(
         Ok(Some(n)) if !n.status.is_terminal() && n.worker_exit.is_none() => n.awaiting_input,
         Ok(Some(_) | None) => None,
         Err(e) => {
-            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
                 "could not re-read awaiting-input state; will retry");
             return false;
         }
@@ -225,7 +225,7 @@ pub fn maybe_fire_awaiting_input(
         Ok(Some(_)) => return true,
         Ok(None) => {}
         Err(e) => {
-            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
                 "could not scan awaiting-input notification marker; will retry");
             return false;
         }
@@ -248,7 +248,7 @@ pub fn maybe_fire_awaiting_input(
         Some(&key),
         json!({ "event_seq": fresh.event_seq }),
     ) {
-        warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+        warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
             "awaiting-input hook fired but marker append failed (a restart may re-fire)");
         return false;
     }
@@ -265,18 +265,17 @@ fn spawn_awaiting_hook(
 ) -> bool {
     let mut command = std::process::Command::new("sh");
     command
-        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
         .arg("-c")
         .arg(cmd)
-        .env("OCTL_RUN_ID", run_id)
-        .env("OCTL_STATUS", "awaiting-input")
-        .env("OCTL_SUMMARY", env_safe(summary, SUMMARY_MAX_CHARS))
-        .env("OCTL_RUN_KIND", kind)
-        .env("OCTL_RUN_TITLE", env_safe(title, TITLE_MAX_CHARS))
-        .env("OCTL_AWAITING_INPUT", "1")
+        .env("TASKFLEET_RUN_ID", run_id)
+        .env("TASKFLEET_STATUS", "awaiting-input")
+        .env("TASKFLEET_SUMMARY", env_safe(summary, SUMMARY_MAX_CHARS))
+        .env("TASKFLEET_RUN_KIND", kind)
+        .env("TASKFLEET_RUN_TITLE", env_safe(title, TITLE_MAX_CHARS))
+        .env("TASKFLEET_AWAITING_INPUT", "1")
         // Reducer bounds keep this comfortably below environment limits. Never
         // truncate a variable advertised as JSON mid-document.
-        .env("OCTL_AWAITING_INPUT_JSON", details)
+        .env("TASKFLEET_AWAITING_INPUT_JSON", details)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -285,12 +284,12 @@ fn spawn_awaiting_hook(
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
-            info!(target: "orchestratectl::supervise", run_id = %run_id,
+            info!(target: "taskfleet::supervise", run_id = %run_id,
                 "fired awaiting-input notify hook");
             true
         }
         Err(e) => {
-            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            warn!(target: "taskfleet::supervise", run_id = %run_id, error = %e,
                 "awaiting-input notify hook failed to spawn; will retry");
             false
         }
@@ -312,14 +311,13 @@ fn spawn_awaiting_hook(
 fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, title: &str) {
     let mut command = std::process::Command::new("sh");
     command
-        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
         .arg("-c")
         .arg(cmd)
-        .env("OCTL_RUN_ID", run_id)
-        .env("OCTL_STATUS", status)
-        .env("OCTL_SUMMARY", summary)
-        .env("OCTL_RUN_KIND", kind)
-        .env("OCTL_RUN_TITLE", title)
+        .env("TASKFLEET_RUN_ID", run_id)
+        .env("TASKFLEET_STATUS", status)
+        .env("TASKFLEET_SUMMARY", summary)
+        .env("TASKFLEET_RUN_KIND", kind)
+        .env("TASKFLEET_RUN_TITLE", title)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -332,7 +330,7 @@ fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, 
                 let _ = child.wait();
             });
             info!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 run_id = %run_id,
                 status = %status,
                 "fired run completion notify hook"
@@ -342,7 +340,7 @@ fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, 
             // The marker is already durably recorded, so we will NOT retry —
             // at-most-once holds. Surface the spawn failure loudly.
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 run_id = %run_id,
                 error = %e,
                 "run completion notify hook failed to spawn (not retried; marker already recorded)"
@@ -383,7 +381,7 @@ fn read_summary(paths: &RunPaths) -> Option<String> {
     .map(str::to_string)
 }
 
-/// Terminal status → the kebab wire string the hook receives in `OCTL_STATUS`.
+/// Terminal status → the kebab wire string the hook receives in `TASKFLEET_STATUS`.
 /// Only terminal statuses reach here; a non-terminal value is defensively
 /// rendered rather than panicking.
 fn status_kebab(status: Status) -> &'static str {
@@ -494,7 +492,7 @@ mod tests {
         let out = tmp.path().join("hook-out.txt");
         // The hook records the env the supervisor handed it.
         let cmd = format!(
-            "printf '%s|%s|%s|%s' \"$OCTL_RUN_ID\" \"$OCTL_STATUS\" \"$OCTL_SUMMARY\" \"$OCTL_RUN_KIND\" > {}",
+            "printf '%s|%s|%s|%s' \"$TASKFLEET_RUN_ID\" \"$TASKFLEET_STATUS\" \"$TASKFLEET_SUMMARY\" \"$TASKFLEET_RUN_KIND\" > {}",
             out.display()
         );
 
@@ -556,7 +554,7 @@ mod tests {
         let open = node.awaiting_input.unwrap();
         let out = tmp.path().join("awaiting.txt");
         let cmd = format!(
-            "printf '%s|%s|%s' \"$OCTL_STATUS\" \"$OCTL_SUMMARY\" \"$OCTL_AWAITING_INPUT\" >> {}",
+            "printf '%s|%s|%s' \"$TASKFLEET_STATUS\" \"$TASKFLEET_SUMMARY\" \"$TASKFLEET_AWAITING_INPUT\" >> {}",
             out.display()
         );
 

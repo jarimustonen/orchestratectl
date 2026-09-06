@@ -5,7 +5,6 @@ type: bug
 reporter: jari
 status: fixed
 priority: high
-related: ['@taskfleet-integrated-validation']
 lane: taskfleet-rename
 lane_seq: 88
 collision: [repository-identity]

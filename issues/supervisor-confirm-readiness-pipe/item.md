@@ -26,7 +26,7 @@ lowers the probability; it does not remove the ambiguity.
 
 **Sound fix:** replace the time-bound pid-file poll with a UNIX daemonization
 readiness pipe threaded through the double-fork in
-`crates/octl-cli/src/run/supervisor_spawn.rs`:
+`crates/taskfleet-cli/src/run/supervisor_spawn.rs`:
 1. Parent creates a pipe; the intermediate inherits the write end.
 2. The grandchild writes a readiness byte (or a structured error) AFTER
    `claim_pid_atomic` + runtime init, then closes the write end.
@@ -44,7 +44,7 @@ partial write).
 
 Landed: readiness pipe replaces the pid-file poll in run create's confirmation path (spawn_for_run). The grandchild writes R<pid>/E<code> after claim_pid_atomic+init and closes; the parent poll()s the read end. Slow-but-healthy boots are confirmed with no deadline to overrun; a dead one is caught by fate-sharing EOF. No orphan window.
 
-Reviewed by a 4-model /llm-review panel (history/review-readiness-pipe-raw.md, triage in history/assessment-readiness-pipe.md). Applied the confirmed hardening (2nd commit): a generous 120s wedge backstop (a purely unbounded read would hang forever behind the BLOCKING claim_pid_atomic flock — verified in octl-core lock.rs), CLOEXEC-both-ends + clear-in-pre_exec (the CLI runs a tracing_appender worker thread, so the write-end leak race is real), strict R<digits>\n framing, from_env fd validation (reject stdio/non-pipe), signal-during-boot handling, and pid-file cleanup on post-claim boot failure.
+Reviewed by a 4-model /llm-review panel (history/review-readiness-pipe-raw.md, triage in history/assessment-readiness-pipe.md). Applied the confirmed hardening (2nd commit): a generous 120s wedge backstop (a purely unbounded read would hang forever behind the BLOCKING claim_pid_atomic flock — verified in taskfleet-core lock.rs), CLOEXEC-both-ends + clear-in-pre_exec (the CLI runs a tracing_appender worker thread, so the write-end leak race is real), strict R<digits>\n framing, from_env fd validation (reject stdio/non-pipe), signal-during-boot handling, and pid-file cleanup on post-claim boot failure.
 
 Declined (with rationale in the assessment): reworking the double-fork-in-pre_exec / atfork hazard — pre-existing architecture, out of this issue's scope; the 120s backstop converts a hypothetical atfork hang into a bounded failure. Worth a separate follow-up if we want to move daemonization into a dedicated helper.
 

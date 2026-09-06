@@ -4,7 +4,7 @@ updated: 2026-06-27
 type: feature
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 ---
 
@@ -13,7 +13,7 @@ closed: 2026-06-27
 ## Description
 
 
-`apply_node_report` (in `crates/octl-core/src/reducer.rs:300`) treats missing `success` AND `cancelled` as "no status change" and silently leaves the node in its prior status with `last_report` populated. `node report` rejects this shape now, but the reducer is the canonical gate — a future write path or a replayed corrupt log would still produce a dangling-terminal-state node.
+`apply_node_report` (in `crates/taskfleet-core/src/reducer.rs:300`) treats missing `success` AND `cancelled` as "no status change" and silently leaves the node in its prior status with `last_report` populated. `node report` rejects this shape now, but the reducer is the canonical gate — a future write path or a replayed corrupt log would still produce a dangling-terminal-state node.
 
 Likewise `apply_run_status` / `apply_node_status` / `apply_node_report` unconditionally write the new status, so a node cancelled by `run cancel` and then reporting success via a late-arriving agent payload flips back to `done` — breaking cancellation semantics.
 

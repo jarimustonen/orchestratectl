@@ -14,7 +14,7 @@
 //!   and [`path`].
 //!
 //! Location: `<resolved Taskfleet home>/config.toml` (canonical
-//! `TASKFLEET_HOME`/`~/.taskfleet`, with bounded legacy adoption). The file
+//! `TASKFLEET_HOME`/`~/.taskfleet`). The file
 //! is entirely optional; a missing or empty file yields [`Config::default`], so
 //! every setting falls through to its built-in default. This is the first
 //! config-file layer in the tool — before it, configuration was purely

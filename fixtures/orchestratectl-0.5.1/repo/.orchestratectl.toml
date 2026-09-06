@@ -1,4 +1,0 @@
-[profile]
-default = "fixture-capable"
-[profile.per_kind]
-research = "fixture-capable"

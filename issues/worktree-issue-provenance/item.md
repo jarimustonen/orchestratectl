@@ -90,7 +90,7 @@ with no consumer), and the triage skill must degrade gracefully when the metadat
 - [x] `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`
 - [x] Worker prompt materialization test under stripped `PATH=/bin`
 - [x] issuectl 0.16 temporary-repository contract probe for unlaned intake, provenance fields, and model labels
-- [x] Bundled-skill snapshot loop (`cargo test -p orchestratectl`; no snapshots changed)
+- [x] Bundled-skill snapshot loop (`cargo test -p taskfleet`; no snapshots changed)
 
 ## Implementation Notes
 

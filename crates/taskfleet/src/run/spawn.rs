@@ -199,19 +199,21 @@ pub fn write_agent_launcher(
     inner_body.extend_from_slice(b" \"$@\"\n");
     write_executable(&inner, &inner_body)?;
 
-    let mut body = b"#!/bin/sh\nset -eu\nunset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n".to_vec();
+    let mut body =
+        b"#!/bin/sh\nset -eu\nunset TASKFLEET_RUN_ID TASKFLEET_NODE_ID TASKFLEET_ATTEMPT\n"
+            .to_vec();
     if selected.supports_worker_telemetry_v1() {
-        writeln!(body, "export OCTL_RUN_ID={}", shell_literal(run_id)).unwrap();
-        writeln!(body, "export OCTL_NODE_ID={}", shell_literal(node_id)).unwrap();
+        writeln!(body, "export TASKFLEET_RUN_ID={}", shell_literal(run_id)).unwrap();
+        writeln!(body, "export TASKFLEET_NODE_ID={}", shell_literal(node_id)).unwrap();
         writeln!(
             body,
-            "export OCTL_ATTEMPT={}",
+            "export TASKFLEET_ATTEMPT={}",
             shell_literal(&attempt.to_string())
         )
         .unwrap();
     }
     if selection.interaction == "autonomous" {
-        body.extend_from_slice(b"export OCTL_INTERNAL_SELF_EXEC=1\nexport OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION=1\nexport OCTL_INTERNAL_WORKER_STATE_ROOT=");
+        body.extend_from_slice(b"export TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION=1\nexport TASKFLEET_INTERNAL_WORKER_STATE_ROOT=");
         body.extend_from_slice(&shell_literal_path(&state_root));
         body.extend_from_slice(b"\nexec ");
         body.extend_from_slice(&shell_literal_path(&self_exe));
@@ -378,7 +380,7 @@ fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome
         #[serde(default)]
         tmux_pane_id: Option<String>,
     }
-    let script = std::env::var_os("OCTL_CREATE_SH")?;
+    let script = std::env::var_os("TASKFLEET_CREATE_SH")?;
     let mut command = Command::new(script);
     if let Some(cwd) = req.cwd {
         command.current_dir(cwd);
@@ -386,7 +388,7 @@ fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome
     command.args(["--type", req.kind]);
     // Legacy supervisor fixtures launch their own sleeping worker. The one
     // launcher-boundary test opts in with an explicit test self executable.
-    if std::env::var_os("OCTL_TEST_SELF_EXE").is_some() {
+    if std::env::var_os("TASKFLEET_TEST_SELF_EXE").is_some() {
         if let Some(agent) = req.agent {
             command.args(["--agent", agent]);
         }
@@ -837,7 +839,6 @@ fn command_output(
     Command::new(&actual)
         .args(args)
         .current_dir(cwd)
-        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| CliError::system(code, format!("spawn {actual}: {e}")))

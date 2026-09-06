@@ -12,7 +12,7 @@ closed: 2026-08-06
 ## Description
 
 `supervise::watchdog::tests::snapshot_is_one_invocation_per_socket_regardless_of_node_count`
-(`crates/octl-cli/src/supervise/watchdog.rs`) FAILS intermittently in the full parallel
+(`crates/taskfleet-cli/src/supervise/watchdog.rs`) FAILS intermittently in the full parallel
 `cargo test --workspace` run (`assertion left == right failed … left: 2, right: 1` —
 `invocation_count` saw a 2nd fake-tmux invocation), but PASSES in isolation, single-threaded,
 within its own module, and on retry.

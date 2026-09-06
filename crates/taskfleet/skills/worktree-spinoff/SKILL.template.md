@@ -158,19 +158,19 @@ Flag rules:
 - `--notify <cmd>` registers a completion hook the supervisor runs when
   the run reaches a terminal state (`done | failed | cancelled`), before
   teardown — the push signal that tells this session the spinoff finished
-  without you polling. The command runs via `sh -c` with `OCTL_RUN_ID`,
-  `OCTL_STATUS`, `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in
+  without you polling. The command runs via `sh -c` with `TASKFLEET_RUN_ID`,
+  `TASKFLEET_STATUS`, `TASKFLEET_SUMMARY`, `TASKFLEET_RUN_KIND`, and `TASKFLEET_RUN_TITLE` in
   its environment. It also fires for an unresolved `node.awaiting_input` after
-  the grace window with `OCTL_STATUS=awaiting-input`, `OCTL_AWAITING_INPUT=1`,
-  and the discussion array in `OCTL_AWAITING_INPUT_JSON`. Delivery is
+  the grace window with `TASKFLEET_STATUS=awaiting-input`, `TASKFLEET_AWAITING_INPUT=1`,
+  and the discussion array in `TASKFLEET_AWAITING_INPUT_JSON`. Delivery is
   **at-least-once**: the healthy path fires
   once, but a supervisor crash mid-fire can re-fire on restart, so write a
   command that tolerates running more than once (an idempotent file
   write / notification, not something that double-counts). Pass it **only
   if you have a real sink** the harness watches — e.g. appending a line to
-  a file (`--notify 'printf "%s %s\n" "$OCTL_RUN_ID" "$OCTL_STATUS" >>
+  a file (`--notify 'printf "%s %s\n" "$TASKFLEET_RUN_ID" "$TASKFLEET_STATUS" >>
   ~/.taskfleet-completions'`) or a desktop toast (`--notify 'terminal-notifier
-  -message "$OCTL_SUMMARY"'` / `notify-send`). Without such a sink, do
+  -message "$TASKFLEET_SUMMARY"'` / `notify-send`). Without such a sink, do
   **not** promise the user a notification; use the `run wait` approach
   under "Following progress" instead. See "Reporting completion back to
   this session" below. Note the command runs in the **supervisor's**
@@ -244,9 +244,9 @@ request_seq="$(taskfleet --output json run show "$run_id" | \
 The file shape is
 `{"discussion_items":[{"topic":"…","options":["…"],"recommended_default":"…"}]}`.
 This makes `run show` / `run list` observable immediately; after three minutes
-(unless `OCTL_AWAITING_INPUT_GRACE_SECS` overrides it), `run wait` settles and a
-registered `--notify` hook fires with `OCTL_STATUS=awaiting-input` and
-`OCTL_AWAITING_INPUT_JSON`.
+(unless `TASKFLEET_AWAITING_INPUT_GRACE_SECS` overrides it), `run wait` settles and a
+registered `--notify` hook fires with `TASKFLEET_STATUS=awaiting-input` and
+`TASKFLEET_AWAITING_INPUT_JSON`.
 
 Do not wait indefinitely. Either (a) wait at most five minutes without opening
 an interactive prompt, then emit `node.input_resolved` with
@@ -527,8 +527,8 @@ otherwise you cannot deliver it:
 
 1. **`--notify <cmd>` (push).** Registered at `run create` (see step 3),
    the supervisor runs the command once on the terminal transition with
-   `OCTL_RUN_ID` / `OCTL_STATUS` / `OCTL_SUMMARY` (and `OCTL_RUN_KIND` /
-   `OCTL_RUN_TITLE`) in its environment. Point it at a sink your harness
+   `TASKFLEET_RUN_ID` / `TASKFLEET_STATUS` / `TASKFLEET_SUMMARY` (and `TASKFLEET_RUN_KIND` /
+   `TASKFLEET_RUN_TITLE`) in its environment. Point it at a sink your harness
    observes — a file/FIFO append the harness tails, or a desktop
    notification. Best for true fire-and-forget: no watcher process has to
    stay alive.

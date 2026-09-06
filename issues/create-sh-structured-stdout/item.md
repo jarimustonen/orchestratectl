@@ -5,7 +5,7 @@ type: chore
 assignee: jari
 status: done
 priority: high
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 labels: [cross-repo]
 closed: 2026-06-13
 ---

@@ -42,13 +42,13 @@ with a single `source` (`env|file|default`). That satisfies AGENTS-AI-FIRST-CLI
    broken config. Precedent (`git config --list`, `kubectl config view`) shows raw
    invalid values.
 2. **Env override hides file per-kind overrides (F3).** When
-   `ORCHESTRATECTL_HARNESS` is set, every row reports `source: env`; a
+   `TASKFLEET_HARNESS` is set, every row reports `source: env`; a
    `[harness.per_kind] research = "claude"` override in the file is invisible, so a
    stale/shadowed config is undetectable and behavior silently changes when the env
    var is later unset.
 3. **Invalid file value is laundered under env (F4).** Because harness-value
    validation lives in the resolver (which short-circuits on env), `config show`
-   with `ORCHESTRATECTL_HARNESS=pi` and a bad file value *succeeds*, hiding the bad
+   with `TASKFLEET_HARNESS=pi` and a bad file value *succeeds*, hiding the bad
    value — so `config show`'s strictness depends on ambient env state.
 
 ## Proposed direction
@@ -82,4 +82,4 @@ first real secret-valued key).
   validity, not a hard error (TOML-parse errors may still fail).
 - The file's `[harness.per_kind]` overrides are visible even when env shadows them.
 - Validity of the file layer does not depend on whether env is set.
-- Schema versioned; tests for each scenario incl. `ORCHESTRATECTL_HARNESS` set.
+- Schema versioned; tests for each scenario incl. `TASKFLEET_HARNESS` set.

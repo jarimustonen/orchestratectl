@@ -5,7 +5,7 @@ type: improvement
 assignee: jari
 status: wontfix
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 commits:
 - hash: f0ec2b4
@@ -22,7 +22,7 @@ From event-log-durability-trio review (GPT-5.5 #1b/#10, DeepSeek #5). Two relate
 
 Done under the `events-tightening-pair` wrapper. Per that task's MVP guidance, instead of building the index speculatively we benched the worst-case scan and let the number decide.
 
-**Bench:** `crates/octl-core/benches/idempotency_scan.rs` (`cargo bench -p octl-core --bench idempotency_scan`). Each timed iteration is one full linear scan of an N-line log — the lookup key sits on the LAST line, so every line is parsed before the match. Triggered through the only public path (`append_and_apply_event` with an already-present `idempotency_key`, which returns the prior event before any append/reduce), so the measurement is lock-acquire + `find_prior_with_key` and nothing else. Apple Silicon, `--release`:
+**Bench:** `crates/taskfleet-core/benches/idempotency_scan.rs` (`cargo bench -p taskfleet-core --bench idempotency_scan`). Each timed iteration is one full linear scan of an N-line log — the lookup key sits on the LAST line, so every line is parsed before the match. Triggered through the only public path (`append_and_apply_event` with an already-present `idempotency_key`, which returns the prior event before any append/reduce), so the measurement is lock-acquire + `find_prior_with_key` and nothing else. Apple Silicon, `--release`:
 
 | N (log lines) | min | median | mean | p99 | max |
 |---|---|---|---|---|---|

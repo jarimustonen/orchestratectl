@@ -11,12 +11,12 @@ assignees: ''
 <!-- The shortest possible repro: command run, observed output, expected output. -->
 
 ```
-$ orchestratectl ...
+$ taskfleet ...
 ```
 
 ## Environment
 
-- `orchestratectl version` output:
+- `taskfleet version` output:
 - OS:
 - `tmux -V`:
 - Installed via: cargo / homebrew / source / shell installer
@@ -24,7 +24,7 @@ $ orchestratectl ...
 ## Logs
 
 <!-- If a run-id is involved, paste the relevant excerpt from
-~/.orchestratectl/runs/<id>/events.jsonl or the supervisor stderr. -->
+~/.taskfleet/runs/<id>/events.jsonl or the supervisor stderr. -->
 
 ```jsonl
 ```

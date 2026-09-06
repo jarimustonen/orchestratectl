@@ -16,11 +16,11 @@ closed: 2026-06-28
 
 ## Description
 
-Symptom: a /worktree-spinoff (or any autonomous-merge worktree spawned via `orchestratectl run create --kind <X>`) finishes its work, merges to main, and then sits idle - the run stays `pending`, the per-run supervisor process keeps polling, and the tmux window does not close. The user sees a "dangling" worktree that looks like it is waiting for their input, when in fact the work is complete.
+Symptom: a /worktree-spinoff (or any autonomous-merge worktree spawned via `taskfleet run create --kind <X>`) finishes its work, merges to main, and then sits idle - the run stays `pending`, the per-run supervisor process keeps polling, and the tmux window does not close. The user sees a "dangling" worktree that looks like it is waiting for their input, when in fact the work is complete.
 
-First observed 2026-06-28 (haukinen) after the skill-bundling-campaign deploy. Run 01kw79n2yv3epts3amfszmv3aa (the supervise-test-teardown-leak fix) merged 4 commits to main, closed its issue with `fixed`, and stopped - but `orchestratectl run show` still shows lifecycle pending, supervisor 72879 still alive 30+ minutes later.
+First observed 2026-06-28 (haukinen) after the skill-bundling-campaign deploy. Run 01kw79n2yv3epts3amfszmv3aa (the supervise-test-teardown-leak fix) merged 4 commits to main, closed its issue with `fixed`, and stopped - but `taskfleet run show` still shows lifecycle pending, supervisor 72879 still alive 30+ minutes later.
 
-Root cause: the bundled SKILL.md files for `/worktree-spinoff`, `/worktree-code` (and the autonomous siblings: research, make-skill, bugfix, technical-decision, fan-out, orchestrated) instruct the agent to "merge itself back via /worktree-merge". They do NOT instruct the agent to submit a terminal `node report` to orchestratectl. Without that report:
+Root cause: the bundled SKILL.md files for `/worktree-spinoff`, `/worktree-code` (and the autonomous siblings: research, make-skill, bugfix, technical-decision, fan-out, orchestrated) instruct the agent to "merge itself back via /worktree-merge". They do NOT instruct the agent to submit a terminal `node report` to taskfleet. Without that report:
 
 - The supervisor has no signal that the worker is done; it keeps watching.
 - `run show` reports `lifecycle: pending` indefinitely.
@@ -31,14 +31,14 @@ This is a SKILL design gap, not an agent bug - the agent did exactly what the SK
 
 Fix direction:
 
-1. Verify what verb exists today. `orchestratectl node report --help` is the candidate; if it does not exist, file a separate CLI issue first. From `orchestratectl-overview` the verb is mentioned, so likely it ships - confirm.
+1. Verify what verb exists today. `taskfleet node report --help` is the candidate; if it does not exist, file a separate CLI issue first. From `taskfleet-overview` the verb is mentioned, so likely it ships - confirm.
 
 2. Add an explicit final step to every autonomous-spawn SKILL.md (8 files: worktree-spinoff, worktree-orchestrated, worktree-research, worktree-make-skill, worktree-bugfix, worktree-technical-decision, fan-out, and worktree-code's autonomous post-merge step) that reads roughly:
 
    ```
    After `/worktree-merge` succeeds, submit the terminal report:
 
-   orchestratectl node report <node-id> \
+   taskfleet node report <node-id> \
      --success true \
      --discuss '[...]' \
      --spinoff-candidates '[...]' \
@@ -62,7 +62,7 @@ Fix direction:
 Workaround for already-dangling runs:
 
 ```
-orchestratectl run cancel <run-id>
+taskfleet run cancel <run-id>
 ```
 
 This synthesizes a terminal `node.report` for the pending node and transitions the run to `cancelled` - cosmetic difference from `completed` but functionally clears the supervisor and unblocks the tmux window. The actual merge already happened, so no work is lost.

@@ -4,11 +4,10 @@ status: approved
 maturity: mvp
 ecosystems: [rust]
 targets:
-  - {ecosystem: rust, package: taskfleet-core, registry: crates.io,   adapter: cargo-publish-ci}
-  - {ecosystem: rust, package: taskfleet,      registry: crates.io,   adapter: cargo-publish-ci}
-  - {ecosystem: rust, package: orchestratectl, registry: crates.io,   adapter: cargo-publish-ci}
-  - {ecosystem: rust, package: taskfleet,      registry: gh-releases, adapter: cargo-dist}
-  - {ecosystem: rust, package: taskfleet,      registry: homebrew,    adapter: cargo-dist}
+  - {ecosystem: rust, package: taskfleet-core, registry: crates.io, adapter: cargo-publish-ci}
+  - {ecosystem: rust, package: taskfleet, registry: crates.io, adapter: cargo-publish-ci}
+  - {ecosystem: rust, package: taskfleet, registry: gh-releases, adapter: cargo-dist}
+  - {ecosystem: rust, package: taskfleet, registry: homebrew, adapter: cargo-dist}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
 release: {model: gated, layout: single, bump_hook: "./scripts/shipshape-bump-hook.sh"}
@@ -25,154 +24,44 @@ license: MIT
 docs_site: none
 ---
 
-> **APPROVED; R10 PHASE C CONDUCTOR-OWNED.** R10 Phase A activates the
-> hardened canonical cargo-dist/Homebrew topology after exact generator,
-> ruleset, and SOPS-managed credential proofs. The workspace intentionally
-> remains at 0.5.1 until the conductor completes the post-merge exact-main CI
-> gate and uses only the pinned held-tag wrapper. Do not manually tag, publish,
-> install, or mutate either tap. The old-tap formula remains truthful until R11.
+# Taskfleet release contract
 
-## Rationale
-- **maturity: mvp** — inferred by `ossctl facts`: has CI + a SemVer tag (`v0.0.2-alpha`) rules
-  out `spike`; single committer and no ≥1.0 release rules out `production`. README self-labels
-  "v0.1.0 pre-release", consistent with mvp.
-- **ecosystems: [rust]** — a three-package Cargo workspace: `taskfleet-core`,
-  canonical `taskfleet`, and the implementation-free bounded `orchestratectl`
-  compatibility wrapper.
-- **targets: five declared release legs** — R6 will publish crates in dependency
-  order (`taskfleet-core` → `taskfleet` → `orchestratectl`) with exact pins and
-  registry visibility/reconciliation between steps. The same tag independently
-  triggers Taskfleet GitHub Release and Homebrew legs through cargo-dist. No
-  cross-workflow chronology is implied.
-- **release.layout: single** — the workspace shares one version (`workspace.package.version =
-  0.5.1` in the blocked staging posture); all three packages version and tag together, and cargo-dist treats them as one application
-  (`taskfleet`; the Cargo-only `orchestratectl` wrapper is excluded from binary distribution). Not `monorepo` (which implies
-  per-package versions/tags).
-- **release.model: gated** — in the live release topology, cargo-dist's
-  `release.yml` is triggered by a pushed git tag and the maintained wrapper may
-  cut it autonomously after its exact-SHA green gate. During the R7 pre-cut
-  posture, `dispatch-releases = true` deliberately removes the tag trigger and
-  defaults manual dispatch to non-publishing `dry-run`; R9 restores tag dispatch
-  only after canonical identity/runner validation. Never `auto` (and `auto` is a
-  floor violation on spike, though this is mvp).
-- **versioning: semver** — SemVer-style tags already in use (`v0.0.2-alpha`), workspace staged at
-  `0.5.1`. Pre-1.0 but the maintainer versions with SemVer, not date-based, so not `calver`.
-- **changelog: curated / issuectl-trailers** — a hand-maintained `CHANGELOG.md` already exists
-  (cargo-dist reads it to build GitHub Release notes), and single-contributor → `curated`. The
-  `issues/` tree + issuectl workflow means changelog content is sourced from issuectl trailers
-  (`issuectl changelog`), so `source: issuectl-trailers`. No fragment dir today, matching curated.
-- **provenance_level: keyless** — CI-published via cargo-dist, which supports keyless
-  attestation; `slsa-l3` is production-only (floor) and this is mvp.
-- **dependency_bot: dependabot** — mvp-tier default; none configured yet (`.github/dependabot.yml`
-  absent), so this is a proposal for the maintainer to enable.
-- **health_badges: [ci, registry, license]** — README already renders CI + License badges; a
-  crates.io `registry` badge is warranted once published. `coverage`/`scorecard` are
-  production-tier and excluded at mvp.
-- **license: MIT** — declared explicitly in `[workspace.package] license = "MIT"` and inherited
-  by all workspace packages. Respected as the maintainer's stated choice (not overridden to the Rust
-  `MIT OR Apache-2.0` dual-license convention).
-- **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
+Taskfleet is one versioned Cargo workspace with two published packages:
+`taskfleet-core`, then the exact-pinned `taskfleet` CLI. The same version tag
+independently triggers cargo-dist's GitHub Release and canonical Homebrew legs.
+The release publishes one executable, `taskfleet`.
 
-## Release notes
-- **The pinned Shipshape 0.10.1 protocol owns the release transaction.** `scripts/shipshape-release.sh plan
-  major|minor|patch` seals a non-mutating plan. The plan's bump phase updates
-  `[workspace.package].version`, rewrites the exact `taskfleet-core` and
-  wrapper-to-`taskfleet` pins, refreshes `Cargo.lock`, finalizes `CHANGELOG.md`,
-  runs the declared hook, and commits the result. All three crates.io targets are
-  `cargo-publish-ci`; the GitHub Release and Homebrew targets are `cargo-dist`.
-  Consequently the host never runs `cargo publish`: the one version tag delegates
-  all five publish legs to CI, and the engine observes their results at verify.
-- **`release.bump_hook` deterministically regenerates and reviews version fixtures.**
-  `./scripts/shipshape-bump-hook.sh` runs the locked `envelope_snapshots` test with
-  `INSTA_UPDATE=always`, rejects pending `.snap.new` files and unrelated snapshot
-  edits, and runs `scripts/check-version-snapshots.sh`. Its changes are folded into
-  Shipshape's bump commit. The hook never installs or mutates a global binary or skill.
-- **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** The
-  pinned Shipshape 0.10.1 protocol creates the bump commit inside its clean checkout and otherwise proceeds
-  directly to tag push, so the wrapper temporarily rejects only that push. The
-  resulting journalled failure leaves the local tag on the exact bump commit. The
-  wrapper fast-forwards and pushes `main`, waits for `ci.yml` filtered by that exact
-  SHA and `event=push`, then invokes `release resume` only after `gh run watch
-  --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
-  A red or missing main run leaves the release untagged remotely and resumable only
-  through `scripts/shipshape-release.sh resume <run-id>`. The wrapper admits only
-  Shipshape 0.10.1 commit `3e46568d6969701c5fea82fb134b62aa17121cbe` from the retained
-  `jarimustonen/ossctl` source repository. Re-pinning requires a passing manual
-  `scripts/test-shipshape-release-0.10-protocol.sh` run against the candidate build,
-  recorded in the issue that changes the pin. It reads the bump
-  level from the engine's sealed, content-addressed plan and supplies the now-required
-  matching `release cut --bump` input; Shipshape still verifies the seal. Any other
-  version/build or journal near-miss fails closed and requires revalidation.
-- **crates.io publishes are permanent.** Publishing `taskfleet-core@<v>`,
-  `taskfleet@<v>`, and the bounded `orchestratectl@<v>` wrapper cannot be
-  undone: a version can be yanked but never reused or overwritten. Never publish
-  locally. `scripts/publish-crates.sh` packages each exact source archive, then
-  reconciles checksum, non-yanked state, the complete owner set, the complete
-  dependency set (kind/options/target/features included), version-scoped
-  license/rust-version/repository/homepage/description metadata, and the archive's
-  `.cargo_vcs_info.json` commit. Cargo output, including “already exists”, is
-  never success evidence. Every dependent starts only after its prerequisite has
-  produced a matching receipt; if Cargo's own index still lags, the dependent
-  publish transaction retries while its version remains an authoritative 404.
-  Publication is rejected outside the exact activated GitHub tag/SHA/repository
-  context, and the token is exported only to the `cargo publish` subprocess.
-- **CI-green tag gate.** From clean, synchronized `main`, seal and inspect the JSON plan,
-  then pass its id back to the wrapper:
-  ```bash
-  scripts/shipshape-release.sh plan patch > /tmp/release-plan.json
-  jq . /tmp/release-plan.json
-  scripts/shipshape-release.sh cut "$(jq -r .data.plan_id /tmp/release-plan.json)"
-  ```
-  During `cut`, the wrapper verifies that the local tag points at the journalled bump commit,
-  fast-forwards `main` to that commit, pushes `main`, and filters `gh run list` by workflow,
-  branch, **exact SHA**, and `event=push`. `gh run watch "$id" --exit-status && shipshape release
-  resume …` is load-bearing: only a green run can resume the held tag push. Do not replace the
-  wrapper with a direct `shipshape release cut`, bare `shipshape release resume` while the tag is local,
-  or `git push <tag>`; each bypasses this project's pre-tag gate. `publish-crates.yml` repeats the full gate for crates.io, while cargo-dist's
-  independent `release.yml` makes the pre-tag main check necessary for binaries and Homebrew.
-- **Partial success and resume are normal saga states.** The three crates.io jobs,
-  GitHub Release, and Homebrew publication remain separately visible. Re-run only
-  the failed GitHub workflow/jobs from the same immutable tag. A completed crate
-  leg is skipped only after full receipt reconciliation; a mismatch fails closed.
-  If a permanent artifact exists but cannot match the source receipt, abandon the
-  version and fix forward with a patch—never retag, overwrite, or infer success
-  from an error string. `scripts/shipshape-release.sh verify <run-id>` remains the
-  read-only cross-leg view, and an interrupted held local tag resumes only through
-  the wrapper. If cargo-dist uploaded the GitHub Release but its Homebrew job
-  failed because the generated formula produced an empty commit, compare the live
-  formula byte-for-byte with the generated `.rb` artifact. If identical, record
-  that existing tap commit as the Homebrew receipt and resume verification. If it
-  differs, apply the exact generated formula as a normal reviewed commit to the
-  configured tap, push that commit, record its SHA/asset checksum, and resume
-  verification. Never add `--allow-empty`, delete/recreate the release, or weaken
-  the exact-tag/source gates. The final repair destination is
-  `jarimustonen/homebrew-taskfleet`.
-- **R10 structurally authorizes release tags.** Exact cargo-dist 0.28.2 is
-  configured with `pr-run-mode = "skip"`, so generated `release.yml` is tag-only
-  and contains no secret-inheriting reusable workflow call. The held-tag wrapper
-  creates the version-scoped `taskfleet-release-authorizations/<tag>` ref only
-  after exact-main CI succeeds; both cargo-dist builds and the independent
-  crates.io workflow require that ref to identify the peeled tag commit. Live
-  GitHub rulesets restrict all tag creation and authorization-ref creation,
-  updates, and deletion to repository administrators. This prevents ordinary
-  writers, Actions tokens, accidental tags, and historical workflow revisions
-  from bypassing the current gate; a repository administrator remains the
-  explicit trust boundary. cargo-dist 0.28.2 still permits hosting after skipped
-  local builds, so the admitted plan is pinned to a non-empty three-target local
-  matrix: authorization failure makes those jobs fail, which prevents host and
-  Homebrew publication. The wrapper's durable authorization ref marks an
-  irreversible coordinate: if tag resume is interrupted, only that same
-  Shipshape journal may reconcile it. Do not manually push the tag.
-- **Two distribution channels, one tag (after R8-R10 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
-  **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
-  Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,
-  then publishes `taskfleet-core`, `taskfleet`, and `orchestratectl` in dependency order. (2) **Prebuilt binaries + Homebrew
-  formula** via **cargo-dist**, configured in `dist-workspace.toml` (`installers = ["shell",
-  "homebrew"]`, `publish-jobs = ["homebrew"]`, `hosting = "github"`; aarch64 mac + linux
-  targets, mac on a self-hosted runner). `.github/workflows/release.yml` runs `dist`
-  for the same tag. It does not publish to crates.io.
-- **cargo-dist owns `release.yml`.** It is dist-autogenerated — regenerate via `dist init` /
-  `dist generate` after changing the dist config, don't hand-edit, or the next `dist` run clobbers
-  your edits.
-- **A pushed release tag is cached** — GitHub Releases and Homebrew installer URLs are tied to their
-  immutable version tag; deleting a published release leaves dangling installer links.
+## Release transaction
+
+`scripts/shipshape-release.sh plan <major|minor|patch>` seals the non-mutating
+plan. `scripts/shipshape-release.sh cut <plan-id>` owns version bumping, the
+exact core pin, `Cargo.lock`, CHANGELOG finalization, version snapshots, bump
+commit, exact-main CI gate, authorization ref, and tag push. Never invoke Cargo
+publication locally, push a release tag manually, or use a bare Shipshape resume
+while a tag is held locally.
+
+The wrapper admits only Shipshape 0.10.1 build
+`3e46568d6969701c5fea82fb134b62aa17121cbe`. It advances `main` to the
+bump commit and requires green `ci.yml` for that exact push SHA before resuming
+the tag. Both release workflows verify the protected exact-commit authorization
+ref. Registry versions are permanent and may only be yanked, so a partial saga
+is resumed from the same immutable tag or fixed forward with a new patch.
+
+## Validation
+
+Before a release:
+
+- run the full repository green gate from `AGENTS.md`;
+- run and review the complete insta snapshot loop;
+- run release topology, publication, authorization, and distribution fixture
+  tests;
+- package the workspace with `cargo package --workspace --locked --no-verify`
+  and inspect that archives contain exactly the two canonical packages;
+- verify the generated cargo-dist plan contains only Taskfleet archives,
+  checksums, installers, GitHub hosting, and the canonical Homebrew formula;
+- verify the tree and remote `main` are clean, synchronized, and exact-SHA green.
+
+`.github/workflows/publish-crates.yml` owns crates.io. cargo-dist owns the
+generated `.github/workflows/release.yml`; regenerate it rather than editing it
+by hand. `scripts/shipshape-release.sh verify <run-id>` is the read-only
+cross-leg reconciliation surface.

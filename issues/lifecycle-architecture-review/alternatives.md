@@ -65,7 +65,7 @@ The supervisor exists to run this lifecycle for N units in parallel:
    finished-and-merged, finished-but-unmerged (blocked handoff), or died. These
    three are different dispositions with different teardown rules.
 3. **Merge** the unit's branch back to its recorded source/parent branch
-   (`orchestratectl run merge`, which rebases + merges under a lock).
+   (`taskfleet run merge`, which rebases + merges under a lock).
 4. **Tear down** the worktree + tmux window + branch — but **only when the work is
    safely landed**. Unmerged work must survive teardown (invariant 5,
    `blocked-report-deletes-branch`).
@@ -88,14 +88,14 @@ invariants today (see `CLAUDE.md` → *State integrity invariants*):
   gated on terminal outcome) exists to protect this asymmetry. Any alternative
   inherits it.
 - **Append-only event log is the source of truth.** State lives under
-  `~/.orchestratectl/runs/<id>/` as an event log + projections, mutated only
+  `~/.taskfleet/runs/<id>/` as an event log + projections, mutated only
   through the `LockedRun` witness + `append_and_apply_*` API, with an
   `applied_seq` watermark replayed on the next lock. Any new signal channel should
   land *in the log*, not beside it, or it re-introduces a second source of truth.
 
 ### 2.1 What "the current model" actually is (the baseline to beat)
 
-The watchdog (`crates/octl-cli/src/supervise/watchdog.rs`, `mod.rs`) polls on a
+The watchdog (`crates/taskfleet-cli/src/supervise/watchdog.rs`, `mod.rs`) polls on a
 tick and computes a `Liveness` verdict per node by cross-referencing:
 
 | Signal | Source | Failure mode as a truth signal |
@@ -137,7 +137,7 @@ signal is authoritative, and what is the fallback?**
 transitions over a reliable, ordered channel, and the supervisor *only* consumes
 those announcements — it does not infer state. Concretely for this codebase, the
 reliable channel is the **append-only event log itself**: the worker (via the
-bundled SKILL, or a thin `orchestratectl node transition <state>` verb) appends
+bundled SKILL, or a thin `taskfleet node transition <state>` verb) appends
 typed lifecycle events under the run lock:
 
 ```
@@ -192,7 +192,7 @@ considered ready/among-the-living by guesswork — it *sends* `READY=1` /
 its completion is signaled over a reliable OS primitive rather than inferred from
 pid disappearance. Two cooperating pieces:
 
-1. A launcher shim (the tmux pane runs `octl-run-worker <run> <node> -- claude …`)
+1. A launcher shim (the tmux pane runs `taskfleet-run-worker <run> <node> -- claude …`)
    that `wait()`s on the child and records the exact exit code plus a completion
    token. POSIX `wait`/exit-status is the canonical "process finished, and here is
    why" signal — the thing a bare `kill(pid,0)` probe throws away.
@@ -224,7 +224,7 @@ pid disappearance. Two cooperating pieces:
   pipes are for liveness-latency, not for durable state.
 - **Implementation complexity:** *Low-medium, and mostly additive.* The shim is a
   small, testable, harness-agnostic wrapper (the merge/report path is already
-  harness-agnostic per `crates/octl-cli/CLAUDE.md`), and FIFO read/write is stock
+  harness-agnostic per `crates/taskfleet-cli/CLAUDE.md`), and FIFO read/write is stock
   libc. It does **not** require touching every SKILL. Main cost: getting the
   crash-durability right (don't trust the pipe as the record) and portability of
   the shim's `wait`+FIFO across macOS/Linux. Note this project already learned
@@ -293,7 +293,7 @@ terminal condition until pods are confirmed terminal
 ### Option D — The thin model: `run merge` is the ONLY completion truth
 
 **Mechanism.** Delete inference. There is exactly one way a unit becomes DONE: the
-worker calls `orchestratectl run merge`, which — under the run lock — rebases,
+worker calls `taskfleet run merge`, which — under the run lock — rebases,
 merges, appends a durable `explicit-merge` transition, and *that append is the
 completion fact*. The supervisor no longer asks "is it done?" from pid/pane/branch
 at all. It runs **one** residual job: detect the case where the worker will
@@ -454,11 +454,11 @@ Primary sources (supervision / process-management literature, actor systems, job
 runners) and the current code.
 
 **Current code & issues (primary):**
-- `crates/octl-cli/src/supervise/watchdog.rs` — the 4-signal liveness verdict
+- `crates/taskfleet-cli/src/supervise/watchdog.rs` — the 4-signal liveness verdict
   (PID + start-time, tmux tri-state) and the interactive window-vs-pid bias.
-- `crates/octl-cli/src/supervise/{mod.rs,cleanup.rs,notify.rs,reducer.rs}` —
+- `crates/taskfleet-cli/src/supervise/{mod.rs,cleanup.rs,notify.rs,reducer.rs}` —
   rollup, teardown gate, idle-unmerged synthesizer, at-least-once notify.
-- `crates/octl-core/src/{events.rs,lock.rs}` — append-only log, `LockedRun`
+- `crates/taskfleet-core/src/{events.rs,lock.rs}` — append-only log, `LockedRun`
   witness, `applied_seq` watermark, `LOCK_SH` read invariant.
 - `CLAUDE.md` → *State integrity invariants* — invariants 1–5, the data-loss
   asymmetry, the teardown/preservation gate.

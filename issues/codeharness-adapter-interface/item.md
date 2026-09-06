@@ -30,7 +30,7 @@ rollout (design §14) plugs it in later.
 
 ## Scope delivered
 
-`crates/octl-cli/src/harness/`:
+`crates/taskfleet-cli/src/harness/`:
 
 - **`mod.rs`** — the `CodeHarness` trait (`capabilities()` + `run_chunk()`), the
   serde-serializable protocol types (`ChunkRequest`, `ChunkResult`,
@@ -43,7 +43,7 @@ rollout (design §14) plugs it in later.
   resulting git commit (synthesizes `NoChange` when no commit is produced), runs
   the request's checks as the self-check, and best-effort parses usage. Model id +
   credential env-var name are config; the key is read from the environment
-  (`DEEPSEEK_API_KEY` by default), never hardcoded. `GIT_BIN` / `OCTL_AIDER_BIN`
+  (`DEEPSEEK_API_KEY` by default), never hardcoded. `GIT_BIN` / `TASKFLEET_AIDER_BIN`
   overrides make it testable with no network.
 - **`stub.rs`** — `StubHarness`: a deterministic in-process fake the conformance
   suite drives in CI (no network, no git).

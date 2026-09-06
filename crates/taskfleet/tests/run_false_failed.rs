@@ -3,7 +3,7 @@
 //! `lifecycle-architecture-review`).
 //!
 //! Scenario: a worker hand-merges its branch into source with **raw git** (never
-//! `orchestratectl run merge`) and then dies. There is no `merge.started`
+//! `taskfleet run merge`) and then dies. There is no `merge.started`
 //! transaction and no typed `RunMerge` origin, so the crash backstop synthesizes
 //! a `failed` report even though the worker's content is already in source. This
 //! is the accepted thin-model tradeoff — NOT data loss (the branch/worktree are

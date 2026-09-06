@@ -15,11 +15,6 @@
         "package": "taskfleet",
         "manifest": "crates/taskfleet/Cargo.toml",
         "depends_on": "taskfleet-core"
-      },
-      {
-        "package": "orchestratectl",
-        "manifest": "compat/orchestratectl/Cargo.toml",
-        "depends_on": "taskfleet"
       }
     ]
   },

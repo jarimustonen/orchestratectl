@@ -4,11 +4,11 @@ updated: 2026-06-27
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 ---
 
-# octl-core: store validated run_id in RunPaths
+# taskfleet-core: store validated run_id in RunPaths
 
 ## Description
 

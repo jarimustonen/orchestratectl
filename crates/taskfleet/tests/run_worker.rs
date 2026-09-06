@@ -101,28 +101,19 @@ impl Drop for ChildGuard {
 }
 
 #[test]
-fn internal_root_controls_preflight_logging_and_marker_stops_at_worker_boundary() {
+fn internal_root_controls_preflight_logging() {
     let state = TempDir::new().unwrap();
     let paths = seed_run(state.path());
     let ambient = TempDir::new().unwrap();
-    for name in [".taskfleet", ".orchestratectl"] {
-        let root = ambient.path().join(name);
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("managed"), b"ambient").unwrap();
-    }
-    let observed = ambient.path().join("worker-env.txt");
-    let command = format!(
-        "printf '%s' \"${{OCTL_INTERNAL_SELF_EXEC-unset}}\" > {}",
-        observed.display()
-    );
+    let root = ambient.path().join(".taskfleet");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("managed"), b"ambient").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
         .env_remove("TASKFLEET_HOME")
-        .env_remove("ORCHESTRATECTL_HOME")
         .env("HOME", ambient.path())
-        .env("OCTL_INTERNAL_WORKER_STATE_ROOT", state.path())
-        .env("OCTL_INTERNAL_SELF_EXEC", "1")
-        .args(["run-worker", RUN_ID, "n-0001", "--", "sh", "-c", &command])
+        .env("TASKFLEET_INTERNAL_WORKER_STATE_ROOT", state.path())
+        .args(["run-worker", RUN_ID, "n-0001", "--", "true"])
         .output()
         .expect("spawn internal shim");
     assert!(
@@ -130,10 +121,8 @@ fn internal_root_controls_preflight_logging_and_marker_stops_at_worker_boundary(
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(std::fs::read_to_string(observed).unwrap(), "unset");
     assert!(state.path().join("logs/taskfleet.log.jsonl").exists());
     assert!(!ambient.path().join(".taskfleet/logs").exists());
-    assert!(!ambient.path().join(".orchestratectl/logs").exists());
     assert_eq!(worker_exited_event(&paths)["data"]["exit_code"], 0);
 }
 
@@ -208,8 +197,8 @@ fn internal_launcher_starts_candidate_before_publication_and_reports_early_exit(
     let home = TempDir::new().unwrap();
     let marker = home.path().join("candidate-ran");
     let out = bin(&home)
-        .env("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION", "1")
-        .env("OCTL_INTERNAL_WORKER_STATE_ROOT", home.path())
+        .env("TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION", "1")
+        .env("TASKFLEET_INTERNAL_WORKER_STATE_ROOT", home.path())
         .args([
             "run-worker",
             RUN_ID,
@@ -284,7 +273,7 @@ fn shim_records_a_told_failure_when_the_worker_cannot_launch() {
             RUN_ID,
             "n-0001",
             "--",
-            "/nonexistent/orchestratectl-no-such-worker",
+            "/nonexistent/taskfleet-no-such-worker",
         ])
         .output()
         .expect("spawn shim");

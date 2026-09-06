@@ -6,7 +6,7 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
-source_ref: orchestratectl:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:harness
+source_ref: taskfleet:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:harness
 originating_run: 01m0ncfdymcb0y72241p4q8nsz
 originating_run_kind: spinoff
 lane: worker-control-plane
@@ -26,7 +26,7 @@ Integrate the resolver's recorded candidate with process launch and honest telem
 ## Scope
 
 - Launch the exact recorded user-owned argv without reloading config, advancing fallback, or changing the selected candidate.
-- For a selected adapter-capable pi process, export exact full `OCTL_RUN_ID`, `OCTL_NODE_ID`, and absolute `OCTL_ATTEMPT` values.
+- For a selected adapter-capable pi process, export exact full `TASKFLEET_RUN_ID`, `TASKFLEET_NODE_ID`, and absolute `TASKFLEET_ATTEMPT` values.
 - Add `requirement` (`required` for autonomous, `optional` for explicit-interactive) and `support` (`configured` or `unsupported`) to `run show` from the recorded interaction and selected candidate, never from sample arrival.
 - Preserve existing plain launch, adapter, and worker failure disclosure.
 - Prove no alternate create or retry path bypasses the resolver's recorded selection.
@@ -34,7 +34,7 @@ Integrate the resolver's recorded candidate with process launch and honest telem
 ## Acceptance Criteria
 
 - [x] Integrated tests cover autonomous pi+adapter, rejected autonomous unsupported pi/Claude, explicit-interactive Claude, local-profile use, launch failure, and retry pinning without duplicating the resolver's selection loop.
-- [x] The three `OCTL_*` variables carry exact current identity and are documented as the public launcher contract consumed by the external adapter.
+- [x] The three `TASKFLEET_*` variables carry exact current identity and are documented as the public launcher contract consumed by the external adapter.
 - [x] Interaction remains explicit and is never inferred from run kind, profile name, harness name, or telemetry state.
 - [x] No trusted package root, integrity/version attestation, probe negotiation, ambient-extension suppression, launch attestation, capability path/secret, permission enforcement, auto-install, or global harness-setting mutation is introduced.
 

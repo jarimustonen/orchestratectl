@@ -13,7 +13,7 @@ closed: 2026-08-17
 
 ## Description
 
-`orchestratectl run wait <id>` returned **immediately** (`waited_ms: 0`) with a
+`taskfleet run wait <id>` returned **immediately** (`waited_ms: 0`) with a
 stillborn verdict for a run that was merely **slow to create its worker node**.
 The run recovered seconds later and ran to completion normally.
 

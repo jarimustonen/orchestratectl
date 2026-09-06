@@ -13,7 +13,7 @@ closed: 2026-08-16
 
 ## Description
 
-The `landed` signal (`crates/octl-cli/src/run/landed.rs::git_verify_landed`) shells out to up to three git subprocesses per `run show` — `git cherry`, `git merge-base --is-ancestor`, `git rev-list --count` — each via `Command::output()` with **no timeout**. A hung git (NFS-backed repo, a `.git` lock, a pathological history) blocks `run show` indefinitely, with no error surfaced.
+The `landed` signal (`crates/taskfleet-cli/src/run/landed.rs::git_verify_landed`) shells out to up to three git subprocesses per `run show` — `git cherry`, `git merge-base --is-ancestor`, `git rev-list --count` — each via `Command::output()` with **no timeout**. A hung git (NFS-backed repo, a `.git` lock, a pathological history) blocks `run show` indefinitely, with no error surfaced.
 
 This is pre-existing `landed.rs` behavior shared by every landing consumer (`run show`, `run wait`, `run list`), not a regression of the `false_failed` change — but the new `false_failed` read-time consumer (issue `raw-git-selfmerge-false-failed`) runs the same path on every `run show`, amplifying the cost on the status-navigation hot path.
 

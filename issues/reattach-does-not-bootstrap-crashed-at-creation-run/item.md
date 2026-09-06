@@ -13,11 +13,11 @@ closed_by: claude
 
 # run reattach does not bootstrap a child that crashed at creation (0 nodes)
 
-_Source: crates/octl-cli/src/run/ (reattach path)_
+_Source: crates/taskfleet-cli/src/run/ (reattach path)_
 
 ## Description
 
-Observed while driving an 8-unit headless fan-out from homebase (orchestratectl 0.1.0, commit a54f0ff, macOS).
+Observed while driving an 8-unit headless fan-out from homebase (taskfleet 0.1.0, commit a54f0ff, macOS).
 
 ## Symptom
 A fan-out child run crashed **before spawning its worker node**: its event log contained only a single `run.created` event (seq 1), `run show` reported `nodes: 0`, `worktree_root: null`, and the supervisor was dead. `run reattach` on it reported success and started a fresh supervisor (new pid, `alive: true`), but the worker node was **never bootstrapped** — `nodes` stayed 0 across ~50s of polling (4x12s). Reattach kept a supervisor alive but did not (re)spawn the initial worker node for a run that never got past creation, so it is not an effective recovery path for the crashed-at-creation case.

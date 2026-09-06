@@ -15,14 +15,14 @@ commits:
 closed: 2026-08-15
 ---
 
-# orchestratectl run salvage: recover a dead agent's stranded work
+# taskfleet run salvage: recover a dead agent's stranded work
 
 ## Description
 
 Follow-up to @agent-death-strands-recoverable-work (option 2). The acceptance floor there added a machine-readable `recoverable_work` signal on agent-died FAILED reports, surfaced by `run show`/`run wait`. This issue adds the ergonomic recovery command an operator currently runs by hand.
 
 ## Summary
-Add `orchestratectl run salvage <run-id>` that takes the preserved branch of a failed run whose report carries `recoverable_work.recoverable == true` and fast-forwards / cherry-picks it into a fresh worktree for review + merge — the manual salvage the /stint conductor did in the original incident.
+Add `taskfleet run salvage <run-id>` that takes the preserved branch of a failed run whose report carries `recoverable_work.recoverable == true` and fast-forwards / cherry-picks it into a fresh worktree for review + merge — the manual salvage the /stint conductor did in the original incident.
 
 ## Requirements
 - Read the run's terminal node report; refuse (informative error) unless `recoverable_work.recoverable == true` (or a re-computed clean-merge verdict holds).

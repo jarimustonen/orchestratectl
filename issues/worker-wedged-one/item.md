@@ -25,7 +25,7 @@ an unbounded `find /Users/jari …`:
 | `01m0fathfnk4dexmz93kqnkeag` | **11 h 28 min** |
 | `01m0fzj86qn21r4df5c8ksghg7` | **5 h 38 min** |
 
-Throughout, `orchestratectl run show` reported entirely healthy runs:
+Throughout, `taskfleet run show` reported entirely healthy runs:
 
 ```
 status = pending
@@ -67,7 +67,7 @@ about total duration.
 
 ## Environment
 
-orchestratectl 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS, `pi` harness.
+taskfleet 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS, `pi` harness.
 
 ## Close condition
 

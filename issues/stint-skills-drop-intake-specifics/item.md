@@ -12,7 +12,7 @@ closed: 2026-08-17
 
 # Remove project-specific intake concepts leaked into stint-handoff + execution-DAG (keep these skills generic/open-source)
 
-_Source: crates/octl-cli/skills/stint-handoff, crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md_
+_Source: crates/taskfleet-cli/skills/stint-handoff, crates/taskfleet-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md_
 
 ## Description
 
@@ -25,16 +25,16 @@ moves to the CONSUMING project's own personal skill layer (`/wrap-up` → `/tria
 there), leaving these skills generic.
 
 ## Leaked specifics to remove / generalize
-- `crates/octl-cli/skills/stint-handoff/SKILL.template.md` — the intake-check step
+- `crates/taskfleet-cli/skills/stint-handoff/SKILL.template.md` — the intake-check step
   references specific labels (`via:telegram`, `needs-triage`), a specific intake tool,
   and specific slug schemas (`tg-bug-*`, `intake-bug-<repo>-<hash>`). None of these are
   generic. Remove the intake-specific step.
-- `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` — the DAG active-set now
+- `crates/taskfleet-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` — the DAG active-set now
   EXCLUDES a specific `needs-triage` label (plus the matching `comm -3` drift jq filter +
   eligibility rule). That label is not a universal issuectl status — it is downstream
   project vocabulary. Revert the exclusion; the generic active set is non-terminal minus
   the generic `deferred` notion only.
-- `crates/octl-cli/skills/stint-start/SKILL.template.md` — scrub intake framing
+- `crates/taskfleet-cli/skills/stint-start/SKILL.template.md` — scrub intake framing
   ("consume the handoff-prepared intake", etc.). The autonomy tightening itself is
   generic and should STAY; only the intake wording goes.
 - CHANGELOG `[Unreleased]` entry — rewrite to describe only the generic autonomy change,

@@ -22,7 +22,7 @@ use crate::schema::{NodeId, RunId};
 ///
 /// Returns `opts` for call-chaining. No-op on non-Unix, where the
 /// `symlink_metadata` check is the only guard (Windows reparse points are out
-/// of scope — orchestratectl targets darwin/linux).
+/// of scope — taskfleet targets darwin/linux).
 pub fn nofollow(opts: &mut OpenOptions) -> &mut OpenOptions {
     #[cfg(unix)]
     {
@@ -49,7 +49,7 @@ pub fn nofollow(opts: &mut OpenOptions) -> &mut OpenOptions {
 ///
 /// **Scope.** This guards the run directory and everything *inside* it. Symlinks
 /// at or *above* the run root — `<root>/runs`, `<root>`, `$HOME` — are explicitly
-/// out of scope: the state root is `$HOME/.orchestratectl/`, a trusted per-user
+/// out of scope: the state root is `$HOME/.taskfleet/`, a trusted per-user
 /// `0700` directory with no shared writers, so its ancestry is assumed intact.
 ///
 /// **Residual TOCTOU gap.** This is check-then-open: a pure TOCTOU attacker can

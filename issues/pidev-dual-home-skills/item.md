@@ -13,7 +13,7 @@ closed: 2026-08-11
 
 ## Problem
 
-`orchestratectl skill install` currently installs this CLI's companion skill(s) into
+`taskfleet skill install` currently installs this CLI's companion skill(s) into
 `~/.claude/skills/` only, so they are **not discoverable under the pi.dev harness**.
 pi discovers skills from `~/.pi/agent/skills/`, `.pi/skills/`, `.agents/skills/`
 and invokes them as `/skill:name`.
@@ -32,7 +32,7 @@ Jari is migrating the agent stack from Claude Code to pi.dev. homebase's
 `~/.pi/agent/skills/` (homebase issue `pidev-skills-portability`, epic
 `pidev-migration`, workstream **WS4** = "propagate the convention to the
 binary-owned skill installers"). But binaries that ship their own skills via
-`orchestratectl skill install` bypass `dotfiles link`, so their skills stay Claude-only
+`taskfleet skill install` bypass `dotfiles link`, so their skills stay Claude-only
 under pi. Verified on pi v0.82.0 (openai-codex / gpt-5.5): pi loads
 `~/.pi/agent/skills/<name>/SKILL.md` and invokes `/skill:name`; bare `/name`
 cross-references also resolve via pi's injected available-skills list, so **no
@@ -40,7 +40,7 @@ cross-reference rewrite is needed — only the install target**.
 
 ## Done
 
-- `orchestratectl skill install` (and `--force` / `--agent` variants) create each skill
+- `taskfleet skill install` (and `--force` / `--agent` variants) create each skill
   under `~/.pi/agent/skills/` too — idempotent, vendored-filtering-aware.
 - Claude Code install path unchanged.
 - Documented (README / AGENTS).

@@ -45,7 +45,7 @@ fn bin() -> Command {
 #[test]
 fn structured_help_rejects_non_utf8_output_path_without_lossy_routing() {
     use std::os::unix::ffi::OsStringExt as _;
-    let mut path = b"/tmp/orchestratectl-help-".to_vec();
+    let mut path = b"/tmp/taskfleet-help-".to_vec();
     path.push(0xff);
     path.extend_from_slice(b".json");
     bin()

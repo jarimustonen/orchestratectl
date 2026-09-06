@@ -49,7 +49,7 @@ issues).
   Options: a `spinoff bind-issue` verb, or a relaxed `approve --issue-slug`
   that only fills a missing slug. Needs a design decision — defer.
 
-- D5 **Rename `octl_core::SCHEMA_VERSION` → `ENVELOPE_SCHEMA_VERSION`**
+- D5 **Rename `taskfleet_core::SCHEMA_VERSION` → `ENVELOPE_SCHEMA_VERSION`**
   (anthropic). Naming parity with `STATE_SCHEMA_VERSION`. Trivial rename;
   defer to next CLI-touch PR to avoid noise here.
 
@@ -67,12 +67,12 @@ issues).
 
 ## SKIP — out of scope or contradicting decisions doc
 
-- Splitting envelope into `octl-protocol` crate (gpt-5.5). B4 is
+- Splitting envelope into `taskfleet-protocol` crate (gpt-5.5). B4 is
   intentionally a minimal lift; the multi-crate split is a separate
   architectural decision.
 - Replacing inline `base32_lower_10` with the `data-encoding` crate
   (anthropic). Dependency-add decision; the inline helper is ~20 lines
   and now has known-vector coverage.
 - Wrapping `prefix: char` in an enum (gpt-5.5). Refactor outside scope.
-- `#[deprecated]` shim for `octl_cli::error::SCHEMA_VERSION`. octl-cli
+- `#[deprecated]` shim for `taskfleet_cli::error::SCHEMA_VERSION`. taskfleet-cli
   is a binary; no external Rust consumers of its crate root.

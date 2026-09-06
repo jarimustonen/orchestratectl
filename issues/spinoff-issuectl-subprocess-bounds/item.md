@@ -17,7 +17,7 @@ closed: 2026-06-29
 
 ## Milloin tämä näkyy käyttäjälle
 
-- `issuectl` jää jumiin (verkko-ongelma, lukko, deadlock) → `orchestratectl approve` jumittuu määräämättömäksi ajaksi
+- `issuectl` jää jumiin (verkko-ongelma, lukko, deadlock) → `taskfleet approve` jumittuu määräämättömäksi ajaksi
 - `issuectl` palauttaa hyvin suuria tulosteita → CLI:n muistinkäyttö pomppaa
 - Bug-tyyppinen spin-off materialisoituu virheellisesti `feature`-tikettinä
 
@@ -35,7 +35,7 @@ CLI on automaation runko: rikkinäinen `issuectl` ei saa kaataa koko agentti-ket
 
 Korjaus kytkeytyy materialisointi-arkkitehtuuriin (toinen spin-off, `spinoff-issuectl-materialization-arch`). Lisäksi se vaatii:
 
-- Uuden riippuvuuden (`wait-timeout` tai oma poll-toteutus) lisäämistä `octl-cli` cratelle
+- Uuden riippuvuuden (`wait-timeout` tai oma poll-toteutus) lisäämistä `taskfleet-cli` cratelle
 - Ympäristömuuttujien sallittujen listojen ja `current_dir`-politiikan päättämistä
 - `proposed_kind` → `issuectl --type` -mappauksen verifiointia `issuectl`:n hyväksymiä arvoja vasten
 - Aikakatkaisun oletusarvon ja `--issuectl-timeout`-lipun semantiikan päättämistä

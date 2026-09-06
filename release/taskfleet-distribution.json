@@ -15,18 +15,10 @@
     "authorization": "wrapper-ref-exact-tag-main-green-ci",
     "release_tag_ruleset": 22234415,
     "authorization_ref_ruleset": 22234417,
-    "macos_runner": "macOS",
-    "stub_artifact": "orchestratectl-installer.sh",
-    "stub_sha256": "6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b"
+    "macos_runner": "macOS"
   },
   "source_repository": {
-    "current": "jarimustonen/taskfleet",
-    "after_r9": "jarimustonen/taskfleet"
-  },
-  "old_tap": {
-    "repository": "jarimustonen/homebrew-orchestratectl",
-    "prepared_patch": "issues/taskfleet-distribution-topology/old-tap-migration/0001-migrate-orchestratectl-formula-to-taskfleet-tap.patch",
-    "activation": "blocked-r11"
+    "current": "jarimustonen/taskfleet"
   },
   "public_receipts": {
     "repository_id": 1355125556,

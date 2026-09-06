@@ -1,4 +1,4 @@
-//! Integration tests for `orchestratectl run wait`.
+//! Integration tests for `taskfleet run wait`.
 //!
 //! These synthesize terminal manifests directly through the sanctioned write
 //! path (`run create --skip-materialize` + `node report` + `event create
@@ -21,7 +21,7 @@ fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     c
 }
 
@@ -139,7 +139,7 @@ fn forge_worker_node(home: &TempDir, run_id: &str, worktree: &Path, branch: &str
             "task": "x",
             "worktree_path": worktree.display().to_string(),
             "branch": branch,
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@42",
         }))
         .unwrap(),
@@ -190,7 +190,7 @@ fn settle_merged_run(home: &TempDir, title: &str, summary: &str) -> String {
     )
     .unwrap();
     let merge_sh = fake_merge_sh(scratch.path());
-    run_ok(bin(home).env("OCTL_MERGE_SH", &merge_sh).args([
+    run_ok(bin(home).env("TASKFLEET_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
         "run",
@@ -555,7 +555,7 @@ fn wait_reports_landed_git_verified_after_caller_rebase() {
 #[test]
 fn stillborn_run_settles_promptly_as_stalled() {
     let home = TestHome::new();
-    // `run create` under OCTL_TEST_SKIP_MATERIALIZE spawns no supervisor, so the
+    // `run create` under TASKFLEET_TEST_SKIP_MATERIALIZE spawns no supervisor, so the
     // fresh run has the exact stillborn shape (pending, 0 nodes, no supervisor,
     // updated_at == created_at).
     let born = pending_run(&home, "stillborn");
@@ -830,15 +830,11 @@ fn awaiting_input_surfaces_and_settles_after_grace() {
     assert_eq!(row["awaiting_input"], true);
     assert_eq!(row["open_discussion_count"], 1);
 
-    let out = run_ok(bin(&home).env("OCTL_AWAITING_INPUT_GRACE_SECS", "0").args([
-        "--output",
-        "json",
-        "run",
-        "wait",
-        &run,
-        "--timeout",
-        "2s",
-    ]));
+    let out = run_ok(
+        bin(&home)
+            .env("TASKFLEET_AWAITING_INPUT_GRACE_SECS", "0")
+            .args(["--output", "json", "run", "wait", &run, "--timeout", "2s"]),
+    );
     let waited = &out["data"]["runs"][0];
     assert_eq!(waited["status"], "pending");
     assert_eq!(waited["awaiting_input"], true);

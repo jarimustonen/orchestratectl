@@ -9,7 +9,7 @@ warrant teardown. The shipped fix compensated with an inline reclaim in
 `run merge`, splitting teardown ownership.
 
 ## Fix (chosen: option 2 — explicit-merge overrides a prior terminal)
-1. **Reducer adoption** (`octl-core/src/reducer.rs`). In `reduce_node_report`, when
+1. **Reducer adoption** (`taskfleet-core/src/reducer.rs`). In `reduce_node_report`, when
    the node is already terminal AND the incoming report is a *confirmed successful
    explicit merge* (`via == "explicit-merge"`, `success == true`, not `cancelled`),
    ADOPT it: overwrite `last_report`, set status `Done`, refresh `updated_at`.
@@ -24,14 +24,14 @@ warrant teardown. The shipped fix compensated with an inline reclaim in
      schema/snapshots stable). Force `-D` stays gated on the confirmed merge via
      the existing `node_branch_merged` (`success == true` + explicit-merge/reconciled).
 
-2. **`AppendResult.applied`** (`octl-core/src/events.rs`). Add `applied: bool` =
+2. **`AppendResult.applied`** (`taskfleet-core/src/events.rs`). Add `applied: bool` =
    "the reducer produced ≥1 projection op for THIS append" (false on idempotent
    replay). Private `append_and_apply_unlocked_reporting` returns `(seq, applied)`;
    public `append_and_apply_unlocked` stays `-> u64` (15+ callers untouched);
    `append_and_apply_event` fills the field. No user-facing serialization → no
    snapshot churn.
 
-3. **`run merge` drops inline reclaim** (`octl-cli/src/run/merge.rs`). No more
+3. **`run merge` drops inline reclaim** (`taskfleet-cli/src/run/merge.rs`). No more
    re-reading `last_report.via`. The reducer always adopts, so teardown is the
    supervisor's again. `ensure_report_consumer` gains a *terminal + teardown-
    warranted* reattach: `reattach ⟺ no live supervisor ∧ ever supervised ∧
@@ -45,7 +45,7 @@ warrant teardown. The shipped fix compensated with an inline reclaim in
 
 4. **Remove the workaround** `reclaim_merged_worktree_branch`,
    `close_merged_node_window`, `branch_exists`, and their tests from
-   `octl-cli/src/supervise/cleanup.rs`.
+   `taskfleet-cli/src/supervise/cleanup.rs`.
 
 ## Preservation gates (must stay intact)
 - Blocked-report gate (`node_report_is_blocked`) and source-relative unmerged

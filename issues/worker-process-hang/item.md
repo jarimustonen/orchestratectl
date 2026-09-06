@@ -16,9 +16,9 @@ _Source: run wait / run merge_
 
 ## Observed (real stint, 2026-07-24, glasspad html-artifact-host-rewrite Wave 3a)
 
-A spinoff worker's Claude process hung mid-run. The agent had COMMITTED its work to the worktree branch (one commit; build+clippy+tests+security-suite all green) but DIED before running 'orchestratectl run merge'.
+A spinoff worker's Claude process hung mid-run. The agent had COMMITTED its work to the worktree branch (one commit; build+clippy+tests+security-suite all green) but DIED before running 'taskfleet run merge'.
 
-'orchestratectl run wait <id>' returned: status=failed, merged=false, summary='Agent for node n-0001 stopped responding: agent-died', error='agent-died'. Supervisor left the worktree+branch in place (correct for a terminal failed run).
+'taskfleet run wait <id>' returned: status=failed, merged=false, summary='Agent for node n-0001 stopped responding: agent-died', error='agent-died'. Supervisor left the worktree+branch in place (correct for a terminal failed run).
 
 ## Impact
 
@@ -28,7 +28,7 @@ The failed/agent-died status does not distinguish (a) worker died with no usable
 
 - Heartbeat/watchdog on the worker process so a hang is reported as 'hung' (distinct from clean agent-died), with a configurable timeout + optional auto-resume.
 - 'run wait'/'run show' should surface whether the worktree branch has commits ahead of source on a failed run, so callers can tell salvageable from empty.
-- A first-class 'orchestratectl run salvage <id>' (or 'run merge --force-from-branch') that merges a dead run's committed branch and tears down, instead of hand-rolled git.
+- A first-class 'taskfleet run salvage <id>' (or 'run merge --force-from-branch') that merges a dead run's committed branch and tears down, instead of hand-rolled git.
 
 ## Related
 

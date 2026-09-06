@@ -4,11 +4,11 @@ updated: 2026-06-27
 type: feature
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 commits:
 - hash: b9d8dd2
-  summary: add octl_core::events::find_prior_with_key + PriorEvent
+  summary: add taskfleet_core::events::find_prior_with_key + PriorEvent
 - hash: a3460bf
   summary: delegate event/create find_prior_event
 - hash: b1d1664
@@ -19,14 +19,14 @@ commits:
   summary: apply multi-model review findings
 ---
 
-# Move idempotency event-log scanner to octl-core
+# Move idempotency event-log scanner to taskfleet-core
 
 ## Description
 
 
-`crates/octl-cli/src/event/create.rs::find_prior_event` and `crates/octl-cli/src/node/report.rs::find_prior_report` are near-identical line-by-line scanners of `events.jsonl` looking for a matching `idempotency_key`. They share the `ProbeFields` / `FullEventForReplay` deserialise types and the same torn-line tolerance.
+`crates/taskfleet-cli/src/event/create.rs::find_prior_event` and `crates/taskfleet-cli/src/node/report.rs::find_prior_report` are near-identical line-by-line scanners of `events.jsonl` looking for a matching `idempotency_key`. They share the `ProbeFields` / `FullEventForReplay` deserialise types and the same torn-line tolerance.
 
-Lift the scanner into `octl_core::events` taking the kind as a parameter and returning a typed `PriorEvent { seq, node_id, data }`. Both CLI sites then call one function.
+Lift the scanner into `taskfleet_core::events` taking the kind as a parameter and returning a typed `PriorEvent { seq, node_id, data }`. Both CLI sites then call one function.
 
 While at it, fix the tolerance bug surfaced by review: both scanners `continue` on any JSON parse error (per `find_prior_event` in `event/create.rs:425` and `find_prior_report` in `node/report.rs`), but the doc-comment claims to mirror `recover_last_seq`'s torn-final-line tolerance. A corrupt middle line containing a matching key would be silently ignored and the CLI would double-append.
 

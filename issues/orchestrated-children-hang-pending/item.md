@@ -15,7 +15,7 @@ closed: 2026-06-30
 ## Description
 
 **Reporter:** deutschpad main-session agent (Claude Code)
-**Version:** orchestratectl `0.0.2-alpha` (commit `626400110051ac4b50fe3f2f86245eef6478ce3b`)
+**Version:** taskfleet `0.0.2-alpha` (commit `626400110051ac4b50fe3f2f86245eef6478ce3b`)
 **OS:** macOS / darwin 25.5.0
 **Reported:** 2026-06-30
 **Severity:** High — makes `/orchestrate` unusable in practice; silently hangs the campaign and litters the user's tmux + git worktree state.
@@ -26,7 +26,7 @@ branch successfully**, but their runs then **stayed in
 `manifest.status: pending` indefinitely** — they never reached a
 terminal state (`done`), never submitted a consumable terminal report,
 and never tore down their git worktree or tmux window. Because the
-runs never went terminal, `orchestratectl run wait <child>` blocked
+runs never went terminal, `taskfleet run wait <child>` blocked
 forever, hanging the whole campaign. The user observed three worktrees
 + tmux windows sitting idle ("they're not doing anything and don't
 seem to be merging") even though the code was already on the
@@ -34,7 +34,7 @@ integration branch.
 
 By contrast, **`--kind spinoff` children behaved perfectly** in the
 exact same session (dozens of them across the day): each self-merged
-via `orchestratectl run merge` and reliably tore down its worktree +
+via `taskfleet run merge` and reliably tore down its worktree +
 tmux window. The defect is specific to the **orchestrated** kind (or
 to how the `--kind orchestrate` driver supervises its parent-pointed
 children).
@@ -48,7 +48,7 @@ children).
    `orchestrate/card-content-program-2026-06-30` off `main`.
 3. Spawned 3 ready children:
    ```
-   orchestratectl run create --kind orchestrated \
+   taskfleet run create --kind orchestrated \
      --title "f1-migration-schema" \
      --prompt-file /tmp/f1-migration-schema.md \
      --source-branch orchestrate/card-content-program-2026-06-30 \
@@ -74,13 +74,13 @@ Child run ids: `01kwbpktay6zxr0t0fhrd7n71v` (f1),
   and each worktree was **clean** (`git status --porcelain` empty).
 - Despite that, for **all three**:
   ```
-  orchestratectl run show <child> --output json
+  taskfleet run show <child> --output json
   → data.manifest.status == "pending"
   → data.manifest.nodes  == []        # <-- empty nodes array
   ```
   i.e. the run never went terminal AND the manifest shows **zero
   nodes**, even though a worker node existed and finished.
-- `orchestratectl run wait <child>` (no `--timeout`) **blocked
+- `taskfleet run wait <child>` (no `--timeout`) **blocked
   indefinitely** (the gate child never reached `done|failed|cancelled`),
   so the orchestration loop that waits on gate features to fan out the
   next wave never progressed.
@@ -89,7 +89,7 @@ Child run ids: `01kwbpktay6zxr0t0fhrd7n71v` (f1),
 
 ## What the reporter had to do to recover
 
-- `orchestratectl run cancel <child>` did push the runs terminal **but
+- `taskfleet run cancel <child>` did push the runs terminal **but
   did NOT tear down** the worktrees or tmux windows.
 - Manual cleanup required: `git worktree remove --force <path>` ×3,
   `git branch -D <wtbranch>` ×3, `tmux kill-window` ×3,
@@ -101,7 +101,7 @@ Child run ids: `01kwbpktay6zxr0t0fhrd7n71v` (f1),
 ## Hypotheses for the maintainer (pick whichever the code supports)
 
 1. **Terminal report not consumed / supervisor not winding down (most
-   likely).** The child's closing `orchestratectl run merge` (or its
+   likely).** The child's closing `taskfleet run merge` (or its
    terminal `node report`) succeeded at the git layer but the per-run
    supervisor for an **orchestrated** (parent-pointed) child never
    consumed the report → run stays `pending`, no teardown. Possibly
@@ -115,7 +115,7 @@ Child run ids: `01kwbpktay6zxr0t0fhrd7n71v` (f1),
    terminal-status roll-up can never fire.
 3. **Agent merged manually instead of via `run merge`.** If the
    orchestrated brief/skill led the agent to `git merge` into the
-   integration branch directly (rather than `orchestratectl run
+   integration branch directly (rather than `taskfleet run
    merge`), the run would have no terminal report by construction.
    The presence of `issuectl` link commits + the merge suggests the
    agent followed *a* closing recipe; worth confirming from the
@@ -127,7 +127,7 @@ Child run ids: `01kwbpktay6zxr0t0fhrd7n71v` (f1),
 
 ## Corroborating signal
 
-`orchestratectl run list` for this account shows a long tail of
+`taskfleet run list` for this account shows a long tail of
 historical `orchestrated` runs in `cancelled` / `pending` / `failed`
 states (e.g. `f-exercise-engine`, `f-schema-v2`,
 `f-level-progression`, `f-session-reauth`, …), whereas `spinoff` runs
@@ -155,10 +155,10 @@ been flaky over time, not a one-off.
 
 ## Minimal repro
 
-1. `orchestratectl run create --kind orchestrate --title repro
+1. `taskfleet run create --kind orchestrate --title repro
    --source-branch main` → driver id D.
 2. `git branch orchestrate/repro main`.
-3. `orchestratectl run create --kind orchestrated --title c1
+3. `taskfleet run create --kind orchestrated --title c1
    --source-branch orchestrate/repro --parent-run-id D
    --parent-node-id n-0001 --task "trivial change + commit, then close
    via run merge"`.
@@ -169,6 +169,6 @@ been flaky over time, not a one-off.
 
 ## Source
 
-`/tmp/orchestratectl-orchestrated-hang-bug.md` (transient — copy into
+`/tmp/taskfleet-orchestrated-hang-bug.md` (transient — copy into
 `investigation.md` here if useful while triaging).
 

@@ -13,7 +13,7 @@ closed_by: claude
 
 ## Description
 
-`crates/octl-cli/src/run/show.rs::count_jsons` maps a `read_dir` failure to `0` and uses
+`crates/taskfleet-cli/src/run/show.rs::count_jsons` maps a `read_dir` failure to `0` and uses
 `filter_map(Result::ok)`, so permission/IO failures on a run's `nodes/`, `discussions/`,
 or `spinoffs/` dir are indistinguishable from an empty run — `data.counts` can silently
 report zero while the rest of the payload looks valid. Consider returning a `Result` and
@@ -31,4 +31,4 @@ RE-SCOPE: The discussion/spinoff projection counts it guarded are cut (D3); re-t
 
 ### 2026-08-16T15:32:58Z · @claude
 
-Suljettu epärealistisena. Vaatii käyttöoikeus- tai IO-virheen ohjelman OMASSA kotihakemistossa (~/.orchestratectl/runs/<id>/nodes/). Aiempi RE-SCOPE-päätös (lue manifestin laskuri hakemistoskannauksen sijaan) on kelvollinen mikro-siivous, mutta ilman havaittua esiintymää se ei ansaitse issueta.
+Suljettu epärealistisena. Vaatii käyttöoikeus- tai IO-virheen ohjelman OMASSA kotihakemistossa (~/.taskfleet/runs/<id>/nodes/). Aiempi RE-SCOPE-päätös (lue manifestin laskuri hakemistoskannauksen sijaan) on kelvollinen mikro-siivous, mutta ilman havaittua esiintymää se ei ansaitse issueta.

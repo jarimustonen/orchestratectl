@@ -12,7 +12,7 @@ closed: 2026-07-23
 ## Description
 
 Builds the architectural core of the code-pipeline epic (design.md §2 + §0.2) as
-a NEW, isolated module `crates/octl-cli/src/pipeline/`, behind the seam — no live
+a NEW, isolated module `crates/taskfleet-cli/src/pipeline/`, behind the seam — no live
 supervisor / `run create` / merge path touched. T5 later wires it into the real
 supervisor + event log.
 

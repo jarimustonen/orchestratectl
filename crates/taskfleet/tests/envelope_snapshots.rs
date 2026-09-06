@@ -62,14 +62,14 @@ const ENVELOPE_SCHEMA: u64 = 1;
 // ----------------------------------------------------------------------
 
 /// A binary handle pointed at an isolated `$TASKFLEET_HOME`. The
-/// `OCTL_TEST_SKIP_MATERIALIZE` escape hatch keeps `run create` from
+/// `TASKFLEET_TEST_SKIP_MATERIALIZE` escape hatch keeps `run create` from
 /// shelling out to `create.sh` / spawning a supervisor (same pattern the
 /// sibling suites use), so output is deterministic skeleton-only state.
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::cargo_bin("taskfleet").expect("binary builds");
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     // Hermetic env: the CLI logs to a file and forces `color=never`, but
     // clear any inherited log/color knobs so a developer's shell can't
     // perturb the captured stdout/stderr.

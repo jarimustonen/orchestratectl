@@ -32,7 +32,7 @@ Follow-up from pi-spinoff-batch review. Implement a durable creator lease/owner 
 
 ### 2026-08-17T08:15:25Z · @orchestrator
 
-Re-laned supervise→lifecycle 2026-08-17. The `supervise` lane was created for pi-spinoff-batch on the prediction that it would touch supervise/*; git shows its fix landed ENTIRELY in crates/octl-cli/src/run/create.rs (247 lines) with zero files under supervise/. This follow-up inherits that surface — pre-publication idempotency reservations and child publication are run-create plus the octl-core event log. Keeping a separate `supervise` lane asserted disjointness from `lifecycle` that does not exist, and would have permitted a parallel spawn colliding on run/create.rs. Same shape as the two integrated-main breakages recorded in TODO.md.
+Re-laned supervise→lifecycle 2026-08-17. The `supervise` lane was created for pi-spinoff-batch on the prediction that it would touch supervise/*; git shows its fix landed ENTIRELY in crates/taskfleet-cli/src/run/create.rs (247 lines) with zero files under supervise/. This follow-up inherits that surface — pre-publication idempotency reservations and child publication are run-create plus the taskfleet-core event log. Keeping a separate `supervise` lane asserted disjointness from `lifecycle` that does not exist, and would have permitted a parallel spawn colliding on run/create.rs. Same shape as the two integrated-main breakages recorded in TODO.md.
 
 ## Resolution
 

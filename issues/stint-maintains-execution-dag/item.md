@@ -17,7 +17,7 @@ closed: 2026-07-27
 
 ## Description
 
-The /stint orchestrator should treat the execution DAG as a first-class, continuously-maintained artifact in TODO.md — not an ad-hoc thing built once. Design this properly, then implement it in the bundled stint skill (crates/octl-cli/skills/stint/SKILL.template.md).
+The /stint orchestrator should treat the execution DAG as a first-class, continuously-maintained artifact in TODO.md — not an ad-hoc thing built once. Design this properly, then implement it in the bundled stint skill (crates/taskfleet-cli/skills/stint/SKILL.template.md).
 
 ## Problem
 Today the stint skill plans a round from the TODO.md handoff + open issues, but there is no durable, always-current dependency graph telling a *fresh* agent what to do next. When a session hands off, the next agent re-derives ordering from prose. A one-off DAG was hand-built in TODO.md on 2026-07-27 (lanes A/B/C, file-collision edges); this issue makes maintaining such a DAG a standing part of the workflow.
@@ -38,10 +38,10 @@ Today the stint skill plans a round from the TODO.md handoff + open issues, but 
 
 ## Deliverables
 1. A design doc at issues/stint-maintains-execution-dag/design.md that resolves the above (consider an /llm-panel or /llm-workshop pass — this is workflow design worth diverse input).
-2. Implementation: update crates/octl-cli/skills/stint/SKILL.template.md (and any helper script under that skill dir) to encode the DAG-maintenance convention across the relevant phases. Keep the skill generic (project facts stay in the repo's AGENTS.md/TODO.md).
+2. Implementation: update crates/taskfleet-cli/skills/stint/SKILL.template.md (and any helper script under that skill dir) to encode the DAG-maintenance convention across the relevant phases. Keep the skill generic (project facts stay in the repo's AGENTS.md/TODO.md).
 3. If a DAG format/section convention should live in TODO.md structurally, document it (e.g. a template stub the skill writes into).
-4. Redeploy: cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor (0 fail/0 warn).
+4. Redeploy: cargo install --path crates/taskfleet-cli --force && taskfleet skill install --force && taskfleet doctor (0 fail/0 warn).
 
 ## Comments
 - The current hand-built DAG in TODO.md (## Execution DAG (2026-07-27)) is the working example to generalize from — read it.
-- Bundled-skill change ⇒ insta snapshot loop applies (see crates/octl-cli/CLAUDE.md).
+- Bundled-skill change ⇒ insta snapshot loop applies (see crates/taskfleet-cli/CLAUDE.md).

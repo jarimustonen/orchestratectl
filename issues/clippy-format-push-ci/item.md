@@ -9,7 +9,7 @@ closed: 2026-08-17
 
 # Clippy format push warnings break CI
 
-_Source: crates/octl-cli/tests/skill.rs_
+_Source: crates/taskfleet-cli/tests/skill.rs_
 
 ## Description
 

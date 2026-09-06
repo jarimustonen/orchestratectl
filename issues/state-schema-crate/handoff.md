@@ -2,7 +2,7 @@
 
 ## What landed
 
-`crates/octl-core/` now implements design.md §1 (state schema), §4 (per-run flock + atomic writes), and the §1.4 event-append + reducer protocol. See the merge commit message for the full scope.
+`crates/taskfleet-core/` now implements design.md §1 (state schema), §4 (per-run flock + atomic writes), and the §1.4 event-append + reducer protocol. See the merge commit message for the full scope.
 
 V4 stress test (release, M-series Mac, 50 threads × 1000 iters):
 

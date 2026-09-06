@@ -5,7 +5,7 @@ type: feature
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 commits:
 - hash: ee3840aa7e743bcac51f220f243c229205022434
   summary: 'feat(spinoff-proposal-cli): spinoff list/approve/reject'
@@ -20,4 +20,4 @@ closed: 2026-06-12
 
 ## Description
 
-orchestratectl spinoff list|approve|reject (domain verbs, §2.0). approve optionally calls issuectl new to materialize an issue. Implements --dry-run. **Depends on** state-schema-crate. **Validation gate**: V10 (issuectl --add-commit linkage; only blocks auto-materialization path).
+taskfleet spinoff list|approve|reject (domain verbs, §2.0). approve optionally calls issuectl new to materialize an issue. Implements --dry-run. **Depends on** state-schema-crate. **Validation gate**: V10 (issuectl --add-commit linkage; only blocks auto-materialization path).

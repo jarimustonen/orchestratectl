@@ -25,7 +25,7 @@ Implement the merge-transaction recovery from `issues/lifecycle-architecture-rev
 ## Context
 The thin model removes the broad git-reconcile-implies-done heuristic, but `run merge` spans two durability domains: git refs and the event log. A crash after the source branch update but before the explicit-merge event must not become a false failure. Record `merge.started{op_id, expected_source_oid, worker_oid}` before mutation and finish by exact OID on the next lock acquisition.
 
-Likely touches `crates/octl-core/src/{events,reducer,schema}.rs`, `crates/octl-cli/src/run/merge.rs`, and supervisor recovery code.
+Likely touches `crates/taskfleet-core/src/{events,reducer,schema}.rs`, `crates/taskfleet-cli/src/run/merge.rs`, and supervisor recovery code.
 
 ## Done criteria
 - `run merge` writes a durable merge-start record before git mutation.

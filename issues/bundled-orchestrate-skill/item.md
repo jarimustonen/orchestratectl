@@ -24,11 +24,11 @@ The installed `~/.pi/agent/skills/orchestrate/SKILL.md` and `~/.claude/skills/or
 
 ## Expected
 
-`orchestratectl skill install` should install a pi-compatible skill with frontmatter description <= 1024 characters.
+`taskfleet skill install` should install a pi-compatible skill with frontmatter description <= 1024 characters.
 
 ## Comments
 
-This appears to originate from orchestratectl's bundled skill template rather than homebase symlinked skills. Homebase-local YAML errors were fixed separately.
+This appears to originate from taskfleet's bundled skill template rather than homebase symlinked skills. Homebase-local YAML errors were fixed separately.
 
 ## Resolution
 

@@ -15,7 +15,7 @@
 //!    write end and suppress EOF). CLOEXEC on the write end is cleared only
 //!    inside the forked child's `pre_exec`, right before `exec`, so exactly the
 //!    intended grandchild inherits it. The parent passes the write-end fd number
-//!    to the child via `OCTL_READINESS_FD` in the child's environment.
+//!    to the child via `TASKFLEET_READINESS_FD` in the child's environment.
 //! 2. The grandchild (the real supervisor) takes ownership of that inherited fd
 //!    ([`ReadinessReporter::from_env`], validating it is an open pipe above
 //!    stdio) and, **after** `claim_pid_atomic` + boot init, writes a one-line
@@ -49,7 +49,7 @@
 //! never writes AND never closes the write end, and a purely unbounded read
 //! would hang `run create` forever. [`await_ready`](ReadinessPipe::await_ready)
 //! therefore polls the read end with a **generous** deadline (default 120s,
-//! `OCTL_READY_WAIT_MS`) that acts as a wedge circuit-breaker, ~8× the old
+//! `TASKFLEET_READY_WAIT_MS`) that acts as a wedge circuit-breaker, ~8× the old
 //! bounded poll so it never false-fails a merely slow-but-healthy boot. The
 //! confirmation itself is still edge-triggered (a byte or EOF, whichever comes
 //! first) — the deadline only bounds a genuine hang.
@@ -72,7 +72,7 @@ use std::time::{Duration, Instant};
 /// lenient spawn paths (`run reattach`, child-spawn) clear it in
 /// [`crate::run::supervisor_spawn::detached_supervise_command`] so a supervisor
 /// they launch never tries to write to a fd it did not inherit.
-pub const ENV_READINESS_FD: &str = "OCTL_READINESS_FD";
+pub const ENV_READINESS_FD: &str = "TASKFLEET_READINESS_FD";
 
 /// Upper bound on the readiness message the parent will read, so a misbehaving
 /// or corrupt writer cannot make `run create` read unboundedly. The real
@@ -315,7 +315,7 @@ impl ReadinessReporter {
     /// (the lenient spawn paths) or fails validation.
     ///
     /// Validated, not trusted: the fd must be above stdio (never adopt/close
-    /// stdin/out/err — `OCTL_READINESS_FD=1` must not steal stdout) and must be
+    /// stdin/out/err — `TASKFLEET_READINESS_FD=1` must not steal stdout) and must be
     /// an open pipe (`fstat` `S_IFIFO`), guarding against a stale/hand-set env
     /// value pointing at an unrelated descriptor. On adoption we re-set
     /// `FD_CLOEXEC` (the parent cleared it only for our one `exec`) so a
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(octl_readiness_env)]
+    #[serial_test::serial(taskfleet_readiness_env)]
     fn from_env_absent_is_noop() {
         // With the variable unset, the reporter holds no fd and reporting does
         // nothing (the lenient spawn paths rely on this).
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(octl_readiness_env)]
+    #[serial_test::serial(taskfleet_readiness_env)]
     fn from_env_rejects_stdio_fd() {
         // A stale/hand-set fd pointing at stdout must never be adopted (adopting
         // it would close stdout when the reporter drops).
@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(octl_readiness_env)]
+    #[serial_test::serial(taskfleet_readiness_env)]
     fn from_env_rejects_non_pipe_fd() {
         // A high fd that is a regular file (a temp file here) is not a pipe and
         // must be rejected by the fstat guard.

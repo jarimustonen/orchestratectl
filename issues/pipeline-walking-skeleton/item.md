@@ -13,9 +13,9 @@ closed: 2026-07-25
 
 ## Outcome (fixed)
 
-Delivered the additive `orchestratectl pipeline run --intent <str|file>
+Delivered the additive `taskfleet pipeline run --intent <str|file>
 --source-branch <branch> [--files …] [--slug …] [--repo …] [--workdir …] [--keep]`
-command (`crates/octl-cli/src/pipeline/live/`). It forks `feat/<slug>` off the
+command (`crates/taskfleet-cli/src/pipeline/live/`). It forks `feat/<slug>` off the
 pinned source OID, captures the T3 floor baseline, drives spec[Opus/`claude`] →
 code[`claude-deepseek` `CodeHarness`] → per-chunk T3 floor gate → merge → verify
 [Opus] → feature-floor re-check → merge-to-source, and emits a structured report
@@ -27,7 +27,7 @@ restored away. Additive: does not touch `run create` / the supervisor.
 
 Orchestration is unit-tested with a stub harness + scripted spec/verify against a
 real throwaway git repo (no network); the live e2e is gated behind
-`OCTL_PIPELINE_LIVE=1`. `/llm-review` (4 models) ran on the diff; real
+`TASKFLEET_PIPELINE_LIVE=1`. `/llm-review` (4 models) ran on the diff; real
 floor-integrity / worktree-isolation / tier-split findings were fixed (see
 `history/review-pipeline-walking-skeleton.md`).
 

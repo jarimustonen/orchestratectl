@@ -36,7 +36,7 @@ child run's log-authoritative status rather than its manifest/`nodes` projection
 
 ## Comments
 
-Hot-file cluster: `crates/octl-cli/src/supervise/*` — sequence edits.
+Hot-file cluster: `crates/taskfleet-cli/src/supervise/*` — sequence edits.
 
 ## Resolution
 

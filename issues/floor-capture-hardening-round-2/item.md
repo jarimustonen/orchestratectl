@@ -62,7 +62,7 @@ and trusts the workspace layout**, so `env_clear()` alone cannot neutralize them
 
 5. **Provenance enforcement in the evaluator (F10).** `BaselineSnapshot::verify_plan_baseline`
    currently compares the mutable `ref` string, not the pinned `commit_oid`, and does not
-   compare the toolchain fingerprint. Extend `plan::Baseline` (octl-core) to carry
+   compare the toolchain fingerprint. Extend `plan::Baseline` (taskfleet-core) to carry
    `commit_oid` + toolchain and have the T5 evaluator require OID + toolchain equality, not
    just the two hashes.
 

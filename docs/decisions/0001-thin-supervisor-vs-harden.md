@@ -70,7 +70,7 @@ in **how much worker discipline** they demand.
 
 ### D1 — The supervisor core is the THIN model
 
-**A unit is DONE iff the worker called `orchestratectl run merge`.** Under the run lock, that
+**A unit is DONE iff the worker called `taskfleet run merge`.** Under the run lock, that
 call rebases + merges + appends the durable `explicit-merge` transition — and that append **is**
 the completion fact. `run merge` is the **only success-completion truth**.
 
@@ -101,7 +101,7 @@ underspecified. All six are part of the decision, not optional polish:
 
 | # | Hardening | Rule |
 |---|---|---|
-| **A1** | **Launcher-shim true exit status** | Wrap worker launch in a thin shim (`octl-run-worker <run> <node> -- pi …`) that `wait()`s on the child and records its **true exit status** as a durable event under the run lock. Died-vs-finished becomes a **told fact**, not a pid guess. `non-zero/signal → failed`; `exit 0 + explicit-merge → done`; **`exit 0 + no merge → attention-required` (never auto-failed)** — the old safety-net case becomes a visible, resumable state. A shim, not a protocol — no per-SKILL churn. |
+| **A1** | **Launcher-shim true exit status** | Wrap worker launch in a thin shim (`taskfleet-run-worker <run> <node> -- pi …`) that `wait()`s on the child and records its **true exit status** as a durable event under the run lock. Died-vs-finished becomes a **told fact**, not a pid guess. `non-zero/signal → failed`; `exit 0 + explicit-merge → done`; **`exit 0 + no merge → attention-required` (never auto-failed)** — the old safety-net case becomes a visible, resumable state. A shim, not a protocol — no per-SKILL churn. |
 | **A2** | **Bounded merge-transaction recovery** | `run merge` spans git refs + the event log and is not atomic across them. `run merge` appends `merge.started{op_id, expected_source_oid, worker_oid}` **before** the git mutation (compare-and-swap on the source ref); on the next lock acquisition the supervisor **finishes or rejects that one known transaction by OID** — a deterministic completion of a recorded transaction, **not** the general git-reconcile heuristic. |
 | **A3** | **Fenced manual resume/finish skill** | A human-invoked, `LockedRun`-witnessed skill that the PO drops into a stuck worktree: acquire the run lock, verify pid identity, **fence the prior worker** (SIGTERM), then either drive `run merge` **directly from the worktree's git state** (bypassing the deadlocked agent) or launch one fresh agent — **never alongside a live original**. Refuses terminal nodes; idempotent against a duplicate merge. It never `tmux send-keys`-guesses at a wedged opaque agent. |
 | **A4** | **Fixed post-death grace, not an activity clock** | The residual automatic backstop fires only when the shim is *lost* (hard kill of the shim / host death): **process confirmed gone (pid + start-token identity) AND no exit event AND no merge event AND a fixed short grace (~5 s) elapsed → `failed`, preserve branch**. The grace is anchored to the **first confirmed-death observation** (persisted, monotonic, survives supervisor restart) — its only job is to let an in-flight merge/exit append finish. Immediately before appending `failed`, the supervisor **re-reads the log under the exclusive lock**; a merge/exit that landed in the race wins. |
@@ -200,7 +200,7 @@ the migration mechanism, in two tiers:
   (`/worktree-bugfix`, `/orchestrate`, `/worktree-orchestrated`, `/worktree-make-skill`,
   pipeline skills), orphan companion files, dead `config.toml [harness]` sections, deregistered
   sync rows — removed via an explicit `doctor` prune/fix action.
-- **Never destroyed (history data):** `~/.orchestratectl/runs/*` dirs whose kind was removed —
+- **Never destroyed (history data):** `~/.taskfleet/runs/*` dirs whose kind was removed —
   the very evidence `feature-audit.md` mined (717 runs). `doctor` may **report** them; it must
   not delete them.
 - **Read-only legacy decoder (A6, critique):** "no CLI back-compat" does not eliminate on-disk
@@ -228,8 +228,8 @@ the migration mechanism, in two tiers:
   `reducer.rs`/`schema.rs` store layer), the merge-assertion teardown gate (invariant 5), the
   notify back-channel (`notify.rs`).
 - **Correctness-sensitive files to sequence (never parallelize edits):**
-  `crates/octl-core/src/{events,lock,reducer,schema}.rs`, `crates/octl-cli/src/supervise/*`,
-  and the to-be-deleted `crates/octl-cli/src/{harness,floor,pipeline}/*`.
+  `crates/taskfleet-core/src/{events,lock,reducer,schema}.rs`, `crates/taskfleet-cli/src/supervise/*`,
+  and the to-be-deleted `crates/taskfleet-cli/src/{harness,floor,pipeline}/*`.
 
 ## Migration sketch (within 0.2.0, if the big-bang risk bites — see below)
 

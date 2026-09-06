@@ -42,7 +42,7 @@ pre-existing or architectural):
   start-time) pid file whose pid has been recycled to a live unrelated process
   blocks startup until a human removes the file. We now emit a clear message;
   an explicit force/auto-stale heuristic would close it fully.
-- **Docker PID-1 reaping** (doc). If `orchestratectl` is itself PID 1 in a
+- **Docker PID-1 reaping** (doc). If `taskfleet` is itself PID 1 in a
   container with no init/reaper, double-forked grandchildren that exit become
   zombies (init==us, and we have no `waitpid(-1)` reaper loop). Document the
   `tini`/`dumb-init` requirement, or add a SIGCHLD reaper when running as PID 1.

@@ -41,13 +41,13 @@ would have destroyed it permanently. **Silent data loss.**
 
 ## Reproduction
 
-1. Spawn a single-worker autonomous run: `orchestratectl run create --kind
+1. Spawn a single-worker autonomous run: `taskfleet run create --kind
    bugfix --title … --task …` (a `technical-decision` / `spinoff` almost
    certainly hits the same path — the shared blocked-report teardown).
 2. In the worktree, make + commit real work on the run's `wt/<short>-<slug>`
    branch.
 3. Submit the **blocked** terminal report:
-   `orchestratectl node report "$run_id" "$node_id" --from-file report.json`
+   `taskfleet node report "$run_id" "$node_id" --from-file report.json`
    with `{"success": false, "discussion_items": [ … ]}` (no `run merge`).
 4. Observe: supervisor exits, the worktree dir is removed, **and the branch
    `wt/<short>-<slug>` is gone**. `git branch --list 'wt/<short>*'` → empty;
@@ -77,7 +77,7 @@ would have destroyed it permanently. **Silent data loss.**
 
 ## Contract references (what this violates)
 
-The Claude Code skill docs shipped with orchestratectl describe the blocked
+The Claude Code skill docs shipped with taskfleet describe the blocked
 path as explicitly **non-destructive to the branch**:
 
 - `worktree-bugfix`: *"Blocked / needs a human → nothing to merge … leaves the

@@ -28,7 +28,7 @@ Journal `01M0FD8FSTMGYG8YTV92WMWC87` was abandoned. It contains only `run_create
 A clean, sealed minor-bump cut runs:
 
 ```text
-INSTA_UPDATE=always cargo test --locked -p orchestratectl --test envelope_snapshots
+INSTA_UPDATE=always cargo test --locked -p taskfleet --test envelope_snapshots
 updated snapshot ...version_text.snap
 updated snapshot ...version_json.snap
 updated snapshot ...version_jsonl.snap

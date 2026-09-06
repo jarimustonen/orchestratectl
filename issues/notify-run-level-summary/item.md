@@ -20,16 +20,16 @@ _Source: review of no-completion-notification-to-parent_
 
 # Run-level completion summary for `--notify` (multi-node runs)
 
-The `run create --notify <cmd>` hook currently reads `OCTL_SUMMARY` from the
-`n-0001` node's terminal report only (`crates/octl-cli/src/supervise/notify.rs`,
+The `run create --notify <cmd>` hook currently reads `TASKFLEET_SUMMARY` from the
+`n-0001` node's terminal report only (`crates/taskfleet-cli/src/supervise/notify.rs`,
 `read_summary`). That is correct for single-worker kinds (spinoff, code, research,
 bugfix, …) but empty or misleading for multi-node runs:
 
 - **Milloin tämä näkyy käyttäjälle** — kun `--notify`-koukku on rekisteröity
   `fan-out`- tai `orchestrate`-ajolle (tai tulevalle moninodiselle ajolle).
-- **Miten se näkyy** — `OCTL_SUMMARY` on tyhjä (orchestrate-driverin `n-0001` on
+- **Miten se näkyy** — `TASKFLEET_SUMMARY` on tyhjä (orchestrate-driverin `n-0001` on
   runko ilman raporttia) tai kertoo vain yhden noden tuloksen, vaikka
-  `OCTL_STATUS=failed` johtuisi toisesta nodesta.
+  `TASKFLEET_STATUS=failed` johtuisi toisesta nodesta.
 - **Miksi sillä on väliä** — ilmoituksen saava sessio saa harhaanjohtavan tai
   tyhjän yhteenvedon juuri niissä ajoissa (kampanjat, fan-outit), joissa tiivis
   tilannekuva olisi arvokkain.

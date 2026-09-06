@@ -31,7 +31,7 @@ Filed as separate issues (see `issuectl new` commands below or in the
 handoff at the parent epic).
 
 - F13 — Manifest counter desync hardening (`manifest-counter-desync`)
-- F14 — Centralize idempotency in `octl-core::AppendOutcome` (`core-idempotency-api`)
+- F14 — Centralize idempotency in `taskfleet-core::AppendOutcome` (`core-idempotency-api`)
 - F15 — Reducer-level path-traversal defense for event-log IDs (`reducer-path-traversal-defense`)
 - F16 — Single source of truth for projected paths (`projected-paths-into-reducer`)
 - F17 — Control-character escaping in human-text CLI output (`cli-text-output-escape`)

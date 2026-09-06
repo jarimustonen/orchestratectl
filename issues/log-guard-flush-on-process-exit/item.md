@@ -5,14 +5,14 @@ type: bug
 reporter: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 labels: [review-spinoff]
 closed: 2026-06-27
 ---
 
 # event tail process::exit bypasses non-blocking log guard flush
 
-_Source: crates/octl-cli/src/event/tail.rs_
+_Source: crates/taskfleet-cli/src/event/tail.rs_
 
 ## Description
 

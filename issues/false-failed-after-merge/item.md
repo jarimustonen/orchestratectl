@@ -16,12 +16,12 @@ closed: 2026-07-16
 
 # spinoff reported failed/agent-died despite branch already merged to target (false negative run status)
 
-_Source: orchestratectl supervise (liveness poll → agent-died classification)_
+_Source: taskfleet supervise (liveness poll → agent-died classification)_
 
 ## Description
 
 - **Found:** 2026-07-09, by Claude Code while running a multi-worktree rupeama in the `deutschpad` repo.
-- **orx state when observed:** `main` @ `87a5bd1`, binary rebuilt from source via `cargo install --path crates/octl-cli` (v0.1.0).
+- **orx state when observed:** `main` @ `87a5bd1`, binary rebuilt from source via `cargo install --path crates/taskfleet-cli` (v0.1.0).
 - **Severity:** High. The run status is a **false negative**: it says the work failed and the branch is unmerged when in fact the agent completed, committed, and fast-forward-merged into the target branch. This silently inverts the truth for anyone (human or agent) who trusts `run show`.
 
 _(Filed from the root `BUG-false-failed-despite-successful-merge.md` triage file, 2026-07-13.)_
@@ -99,7 +99,7 @@ The supervisor's liveness poll detects the agent process is gone and takes the `
 
 ## Reproduction (sketch)
 
-1. `orchestratectl run create --kind spinoff --headless …` with a task the agent can finish.
+1. `taskfleet run create --kind spinoff --headless …` with a task the agent can finish.
 2. Let the agent complete: commit, fast-forward merge into the source branch, close its issue.
 3. Have the agent process exit at/after the merge, slightly before/while the supervisor consumes the terminal success report (in the wild this happened naturally — a ~50-min run ending in the merge, `iterations: 3817`).
 4. Observe: `run show` → `status: failed`, node report `agent-died`, stderr "branch left unmerged", **while `git log <source>` shows the merge already landed.**
@@ -116,7 +116,7 @@ Same session, caused by a **server power outage + reboot** that killed all super
 
 - **Stranded uncommitted work.** One run (`01kwxmmy1r`, EP-C3 multi-phase-core) had its supervisor killed by the reboot while the agent had **substantial uncommitted work in the worktree, no commits**. Nothing auto-resumed; recovered by hand (commit → rebase → verify → merge). A crash-recovery/resume path, or periodic auto-commit checkpoints in the worktree, would prevent loss.
 - **`pending` forever.** A launched run whose supervisor died (`sup:none`) stayed `status: pending` indefinitely with no reaper to mark it `failed`/`cancelled`. A stale-supervisor sweep (or a heartbeat TTL) would close these out. (`01kx2rv2d0…`, a fully empty EP-C45 attempt: pending, sup:none, no commits, empty tmux pane — required manual `run cancel` + `git worktree remove` + `branch -D`.)
-- **State dir wiped by reboot.** `~/.orchestratectl/runs/*` for older runs were gone after the reboot (tmpfs-like loss for some paths; `/private/tmp` scratchpads also cleared). If any run state is expected to survive a reboot, it should live outside volatile storage.
+- **State dir wiped by reboot.** `~/.taskfleet/runs/*` for older runs were gone after the reboot (tmpfs-like loss for some paths; `/private/tmp` scratchpads also cleared). If any run state is expected to survive a reboot, it should live outside volatile storage.
 
 ## Workaround (until fixed)
 
@@ -126,4 +126,4 @@ Same session, caused by a **server power outage + reboot** that killed all super
 
 ### 2026-08-09T04:02:09Z · @claude-intakectl-stint
 
-Observed again on orchestratectl binary **0.1.0** during an intakectl stint (2026-08-08), across multiple runs. `run wait`/`run show` reported `status: failed` and/or `landed: false` (`landed_method: unverified` or `report-marker`) for runs whose work was in fact git-verified on main (worker-agent-spawn 01kzbj5bwn... landed via report-marker; the extract technical-decision + spinoffs similarly). No false negative caused data loss because I always git-verify landing independently, but the status is misleading. Same version caveat as interactive-code-run-self-merged: this is likely a stale-0.1.0-binary repro (skills already ship for 0.1.1/0.1.3), not a regression.
+Observed again on taskfleet binary **0.1.0** during an intakectl stint (2026-08-08), across multiple runs. `run wait`/`run show` reported `status: failed` and/or `landed: false` (`landed_method: unverified` or `report-marker`) for runs whose work was in fact git-verified on main (worker-agent-spawn 01kzbj5bwn... landed via report-marker; the extract technical-decision + spinoffs similarly). No false negative caused data loss because I always git-verify landing independently, but the status is misleading. Same version caveat as interactive-code-run-self-merged: this is likely a stale-0.1.0-binary repro (skills already ship for 0.1.1/0.1.3), not a regression.

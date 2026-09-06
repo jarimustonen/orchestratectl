@@ -19,8 +19,7 @@ dispatch-releases = false
 github-build-setup = "../build-setup.yml"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
-# Sole generated Homebrew destination. The old homebrew-orchestratectl tap is
-# static migration metadata and must never receive generated formula writes.
+# Sole generated Homebrew destination.
 tap = "jarimustonen/homebrew-taskfleet"
 # Authorization executes inside every local build via github-build-setup. An
 # unauthorized tag therefore makes the build dependency fail (never skip), so
@@ -40,12 +39,6 @@ publish-jobs = ["homebrew"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
 # Where to host releases
 hosting = "github"
-
-# Keep the old releases/latest installer URL useful during 0.6.x-0.7.x without
-# installing anything or adding an old binary to canonical channels.
-[[dist.extra-artifacts]]
-build = ["./scripts/build-legacy-installer-stub.sh"]
-artifacts = ["target/taskfleet-extra/orchestratectl-installer.sh"]
 
 # Route the macOS build to a self-hosted runner. GitHub-hosted macOS minutes
 # are effectively unavailable on the Free plan (multi-hour queues); the two

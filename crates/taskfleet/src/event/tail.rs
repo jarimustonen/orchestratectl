@@ -428,7 +428,7 @@ fn flush_and_exit(mut writer: Box<dyn Write>, code: i32) -> ! {
     // could be dropped before `flush_logs` runs. The flush's real job is the
     // *already-buffered* events; this line is a bonus, not a guarantee. The
     // deterministic regression check lives in cli's `drain_cell` unit test.
-    info!(target: "orchestratectl::event::tail", code, "event tail exiting via signal");
+    info!(target: "taskfleet::event::tail", code, "event tail exiting via signal");
     crate::cli::flush_logs();
     process::exit(code);
 }

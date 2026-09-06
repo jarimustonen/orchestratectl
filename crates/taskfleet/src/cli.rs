@@ -18,13 +18,13 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
 
-const GIT_COMMIT: &str = env!("ORCHESTRATECTL_GIT_COMMIT");
+const GIT_COMMIT: &str = env!("TASKFLEET_GIT_COMMIT");
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SUPPORTED_ENVELOPE_SCHEMAS: &[u32] = &[taskfleet_core::SCHEMA_VERSION];
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "orchestratectl",
+    name = "taskfleet",
     version = CARGO_VERSION,
     about = "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
     disable_help_subcommand = true,
@@ -100,11 +100,6 @@ enum Command {
         #[command(subcommand)]
         action: crate::config::ConfigAction,
     },
-    /// Explicitly migrate or roll back the durable state root.
-    State {
-        #[command(subcommand)]
-        action: crate::state::StateAction,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -170,9 +165,8 @@ impl From<SkillAgentArg> for crate::skill::AgentTarget {
     }
 }
 
-pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
-    // Capture arguments once and build the clap tree from the explicit binary
-    // identity. Never derive branding or compatibility behavior from argv[0].
+pub(crate) fn run() -> ExitCode {
+    // Capture arguments once and parse them through the one canonical identity.
     let raw_args_os: Vec<OsString> = std::env::args_os().skip(1).collect();
     // Structured-help recognition only compares flag/subcommand spellings. A
     // lossy view is safe there, while clap receives the original OsStrings so
@@ -182,7 +176,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    let command = command_for(identity);
+    let command = command_for();
 
     // Structured `--help --output json|jsonl` (AGENTS-AI-FIRST-CLI §14):
     // clap's `--help` only renders text, so intercept the request before
@@ -193,7 +187,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
     // This runs *before* `init_logging`: structured help is pure metadata
     // that never touches run state, so it must not depend on (or be
     // perturbed by) the log file's writability — keeping the payload
-    // deterministic regardless of `$HOME`/`$ORCHESTRATECTL_HOME`.
+    // deterministic regardless of `$HOME`/`$TASKFLEET_HOME`.
     match crate::help::resolve_help_request(&command, &raw_args) {
         crate::help::HelpRequest::None => {}
         crate::help::HelpRequest::Render { spec, path, depth } => {
@@ -207,7 +201,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
                 err.emit();
                 return ExitCode::from(ExitKind::User as u8);
             }
-            return emit_json_help(identity, &path, depth, &spec);
+            return emit_json_help(&path, depth, &spec);
         }
         crate::help::HelpRequest::UnknownSubcommand { token } => {
             // §14 tightening: an unknown subcommand under structured help is
@@ -254,16 +248,16 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
     // all help paths filesystem-pure, this ensures malformed invocations do
     // not create state and lets repository-config preflight inspect the
     // selected `run create --source-repo` before the first write.
-    let mut matches = match command.try_get_matches_from(
-        std::iter::once(OsString::from(identity.command_name())).chain(raw_args_os),
-    ) {
+    let mut matches = match command
+        .try_get_matches_from(std::iter::once(OsString::from("taskfleet")).chain(raw_args_os))
+    {
         Ok(matches) => matches,
         Err(e) => return handle_clap_error(e, &[]),
     };
     let cli = match Cli::from_arg_matches_mut(&mut matches) {
         Ok(cli) => cli,
         Err(e) => {
-            let mut command = command_for(identity);
+            let mut command = command_for();
             return handle_clap_error(e.format(&mut command), &[]);
         }
     };
@@ -301,38 +295,8 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         };
     }
 
-    // State migration owns an exclusive external fence and deliberately skips
-    // ordinary home resolution and canonical-root logging: its receipt and all
-    // diagnostics must remain outside source/destination until the rename is
-    // durably resolved.
-    if matches!(&cli.command, Command::State { .. }) {
-        let Command::State { action } = cli.command else {
-            unreachable!("variant checked above")
-        };
-        let result = crate::state::dispatch(action, &output, &[]);
-        return match result {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                error.emit();
-                ExitCode::from(error.kind as u8)
-            }
-        };
-    }
-
-    // Every current state-writing command holds this shared fence for its whole
-    // lifetime. Migration's exclusive nonblocking acquire therefore proves no
-    // current-version command is writing. It cannot fence old 0.5.1 processes;
-    // the migration payload documents that operator-enforced exclusion.
-    let _migration_fence = match crate::state::command_fence() {
-        Ok(fence) => fence,
-        Err(error) => {
-            error.emit();
-            return ExitCode::from(error.kind as u8);
-        }
-    };
-
     let internal_worker_root = matches!(&cli.command, Command::RunWorker(_))
-        .then(|| std::env::var_os("OCTL_INTERNAL_WORKER_STATE_ROOT").map(PathBuf::from))
+        .then(|| std::env::var_os("TASKFLEET_INTERNAL_WORKER_STATE_ROOT").map(PathBuf::from))
         .flatten();
     let repository_source = match &cli.command {
         Command::Run {
@@ -340,36 +304,9 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         } => crate::home::RepositorySource::RunCreate(source_repo.as_deref()),
         _ => crate::home::RepositorySource::NotApplicable,
     };
-    let compatibility_warnings =
-        match crate::home::initialize(internal_worker_root, repository_source) {
-            Ok(warnings) => warnings,
-            Err(err) => {
-                err.emit();
-                return ExitCode::from(err.kind as u8);
-            }
-        };
-    if !crate::home::warnings_suppressed() && !compatibility_warnings.is_empty() {
-        // Escape control characters before aggregation so even hostile Unix
-        // path bytes cannot manufacture another physical warning line.
-        let warning = compatibility_warnings.join("; ");
-        let escaped: String = warning.chars().flat_map(char::escape_default).collect();
-        eprintln!("warning: {escaped}");
-    }
-
-    // The durable marker is written outside the roots immediately before the
-    // first attempted canonical write. A crash can therefore only close the
-    // rollback window conservatively; it can never write canonical bytes while
-    // leaving a receipt that still authorizes rename-back.
-    let resolved_root = match crate::home::root_dir() {
-        Ok(root) => root,
-        Err(error) => {
-            error.emit();
-            return ExitCode::from(error.kind as u8);
-        }
-    };
-    if let Err(error) = crate::state::mark_canonical_write_started(&resolved_root) {
-        error.emit();
-        return ExitCode::from(error.kind as u8);
+    if let Err(err) = crate::home::initialize(internal_worker_root, repository_source) {
+        err.emit();
+        return ExitCode::from(err.kind as u8);
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. Resolution
@@ -380,7 +317,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
     } = init_logging();
 
     info!(
-        target: "orchestratectl::cli",
+        target: "taskfleet::cli",
         output_format = ?output.format,
         output_file = ?output.file,
         command = ?cli.command,
@@ -389,7 +326,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
 
     let output = &output;
     let result = match cli.command {
-        Command::Version => cmd_version(identity, output, &logging_warnings),
+        Command::Version => cmd_version(output, &logging_warnings),
         Command::Skill { action } => match action {
             SkillAction::List => crate::skill::cmd_list(output, &logging_warnings),
             SkillAction::Show { name } => crate::skill::cmd_show(&name, output, &logging_warnings),
@@ -427,7 +364,6 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         // answer), which does not map onto the shared `Result` path below.
         Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
         Command::Config { action } => crate::config::dispatch(action, output, &logging_warnings),
-        Command::State { .. } => unreachable!("state commands return before home resolution"),
     };
 
     match result {
@@ -439,9 +375,8 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
     }
 }
 
-/// Build the parser tree for one explicitly selected binary identity.
-fn command_for(identity: crate::InvocationIdentity) -> clap::Command {
-    Cli::command().name(identity.command_name())
+fn command_for() -> clap::Command {
+    Cli::command().name("taskfleet")
 }
 
 /// Render the structured help payload for the resolved `subcommand_path`
@@ -449,12 +384,11 @@ fn command_for(identity: crate::InvocationIdentity) -> clap::Command {
 /// and emit it through the standard success envelope. No `warnings` parameter:
 /// help renders before logging and is pure command metadata.
 fn emit_json_help(
-    identity: crate::InvocationIdentity,
     subcommand_path: &[String],
     depth: crate::help::HelpDepth,
     spec: &OutputSpec,
 ) -> ExitCode {
-    let mut root = command_for(identity);
+    let mut root = command_for();
     // Propagate global args (e.g. `--output`) and the implicit `--help`
     // into every subcommand so each node's flag list is accurate.
     root.build();
@@ -559,11 +493,7 @@ struct SupportedSchemas {
     skill: &'static [u32],
 }
 
-fn cmd_version(
-    identity: crate::InvocationIdentity,
-    spec: &OutputSpec,
-    warnings: &[String],
-) -> Result<(), CliError> {
+fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
@@ -585,7 +515,7 @@ fn cmd_version(
             output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
-            println!("{} {}", identity.command_name(), payload.version);
+            println!("taskfleet {}", payload.version);
             println!("commit:                  {}", payload.commit);
             println!("envelope schema:         {}", payload.schema_version);
             println!(
@@ -804,7 +734,7 @@ fn finish_logging(
 /// Test-only writer wrapper that sleeps `delay` before delegating each
 /// `write` to `inner`, throttling the non-blocking log worker so buffered
 /// events provably linger until an explicit flush. Installed only when
-/// `OCTL_TEST_SLOW_LOG_WRITES` is set (see [`slow_log_write_delay`]); never on
+/// `TASKFLEET_TEST_SLOW_LOG_WRITES` is set (see [`slow_log_write_delay`]); never on
 /// a normal run.
 struct SlowLogWriter<W: std::io::Write> {
     inner: W,
@@ -826,7 +756,7 @@ impl<W: std::io::Write> std::io::Write for SlowLogWriter<W> {
 }
 
 /// Per-write delay for the [`SlowLogWriter`] test hook, parsed from
-/// `OCTL_TEST_SLOW_LOG_WRITES` (milliseconds).
+/// `TASKFLEET_TEST_SLOW_LOG_WRITES` (milliseconds).
 ///
 /// **Debug builds only.** In a release build this always returns `None`, so
 /// the env var has zero effect and the plain file is used directly — the hook
@@ -835,7 +765,7 @@ impl<W: std::io::Write> std::io::Write for SlowLogWriter<W> {
 /// tests run the debug binary, where the hook is live.
 #[cfg(debug_assertions)]
 fn slow_log_write_delay() -> Option<std::time::Duration> {
-    std::env::var("OCTL_TEST_SLOW_LOG_WRITES")
+    std::env::var("TASKFLEET_TEST_SLOW_LOG_WRITES")
         .ok()?
         .parse::<u64>()
         .ok()
@@ -875,10 +805,7 @@ fn init_logging() -> LoggingInit {
     let log_path = if let Some(p) = log_path() {
         p
     } else {
-        warnings.push(
-            "log path unavailable: TASKFLEET_HOME, ORCHESTRATECTL_HOME, and HOME are unset"
-                .to_string(),
-        );
+        warnings.push("log path unavailable: TASKFLEET_HOME and HOME are unset".to_string());
         return finish_logging(warnings, None, None);
     };
 
@@ -938,7 +865,7 @@ fn init_logging() -> LoggingInit {
     let builder = NonBlockingBuilder::default()
         .lossy(true)
         .buffered_lines_limit(LOG_BUFFERED_LINES);
-    // Test-only: `OCTL_TEST_SLOW_LOG_WRITES=<ms>` wraps the file so each
+    // Test-only: `TASKFLEET_TEST_SLOW_LOG_WRITES=<ms>` wraps the file so each
     // `write(2)` sleeps, forcing the background worker to fall behind. That
     // makes the flush-on-exit contract observable end-to-end: events stay
     // buffered (not yet on disk) at exit, so only an explicit drain
@@ -988,10 +915,8 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn command_branding_comes_only_from_explicit_identity() {
-        let orchestratectl = command_for(crate::InvocationIdentity::ORCHESTRATECTL);
-        let taskfleet = command_for(crate::InvocationIdentity::TASKFLEET);
-        assert_eq!(orchestratectl.get_name(), "orchestratectl");
+    fn command_has_canonical_identity() {
+        let taskfleet = command_for();
         assert_eq!(taskfleet.get_name(), "taskfleet");
 
         let structured = crate::help::build_help(

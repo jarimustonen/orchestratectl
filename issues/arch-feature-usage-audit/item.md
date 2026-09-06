@@ -18,7 +18,7 @@ PHASE 1 (parallel). Inventory every user-facing surface — the run kinds (code,
 
 ### 2026-08-12T05:51:17Z · @jari
 
-STEER (2026-08-12, primary user): actual usage is NARROW — 'we have quite limited use cases; it's very possible some options really aren't needed.' Ground the audit in Jari's REAL use set (grep the stint/worktree skill call patterns + ~/.orchestratectl/runs history + confirm WITH Jari), then flag every unused kind/flag/subsystem as a removal candidate with its drag cost. BIAS TOWARD CUTTING. Suspects: the 9 run-kinds, code-pipeline/wave-build, harness bakeoff, discussions/spinoff-proposals. Feeds DECISION-1.
+STEER (2026-08-12, primary user): actual usage is NARROW — 'we have quite limited use cases; it's very possible some options really aren't needed.' Ground the audit in Jari's REAL use set (grep the stint/worktree skill call patterns + ~/.taskfleet/runs history + confirm WITH Jari), then flag every unused kind/flag/subsystem as a removal candidate with its drag cost. BIAS TOWARD CUTTING. Suspects: the 9 run-kinds, code-pipeline/wave-build, harness bakeoff, discussions/spinoff-proposals. Feeds DECISION-1.
 
 ### 2026-08-12T06:50:02Z · @agent-arch-audit
 

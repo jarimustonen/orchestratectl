@@ -40,8 +40,8 @@ When a tool, command, external service, or required review/sub-workflow fails or
 
 Reuse the existing terminal `node.report`; do not invent a second worker-to-spawner message path:
 
-- completed work includes the failure disclosure in the report file passed to `orchestratectl run merge --report-file`;
-- work that cannot safely complete submits a direct blocked `orchestratectl node report` with `success: false`, the failure disclosure, and any `recoverable_work` / `discussion_items` context;
+- completed work includes the failure disclosure in the report file passed to `taskfleet run merge --report-file`;
+- work that cannot safely complete submits a direct blocked `taskfleet node report` with `success: false`, the failure disclosure, and any `recoverable_work` / `discussion_items` context;
 - the spawning agent reads the same durable report through `run show` / `run wait` and decides whether to retry, recover, continue, or file a bug.
 
 The report is communication, not an automatic severity verdict. A tool error alone must not create a new supervisor terminal state or bypass the existing typed outcome and work-preservation rules.

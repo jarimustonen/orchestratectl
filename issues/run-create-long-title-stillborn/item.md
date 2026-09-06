@@ -17,7 +17,7 @@ closed: 2026-08-16
 
 ## Description
 
-`orchestratectl run create --kind spinoff --headless --title "<long title>"` deterministically produces a **stillborn** run (supervisor never records, `node_count: 0`, no reason persisted in the run dir) when the title is long enough that the derived worktree/branch name is truncated.
+`taskfleet run create --kind spinoff --headless --title "<long title>"` deterministically produces a **stillborn** run (supervisor never records, `node_count: 0`, no reason persisted in the run dir) when the title is long enough that the derived worktree/branch name is truncated.
 
 ## Evidence (real, 2026-08-14)
 
@@ -34,7 +34,7 @@ The window is created under a tmux-truncated name, but the lookup searches for t
 
 ## Impact
 
-Silent-ish failure: `run create` returns a `create_sh_error` envelope, but if the caller redirects/ignores stdout the run just sits `pending`/stillborn with **no reason recorded in `~/.orchestratectl/runs/<id>/manifest.json`** (`error: null`). Wastes a spawn and, in an autonomous batch, looks like an unexplained stillborn (masquerades as the `supervisor-spawn-fails-silently-at-run-create` class).
+Silent-ish failure: `run create` returns a `create_sh_error` envelope, but if the caller redirects/ignores stdout the run just sits `pending`/stillborn with **no reason recorded in `~/.taskfleet/runs/<id>/manifest.json`** (`error: null`). Wastes a spawn and, in an autonomous batch, looks like an unexplained stillborn (masquerades as the `supervisor-spawn-fails-silently-at-run-create` class).
 
 ## Fix direction
 

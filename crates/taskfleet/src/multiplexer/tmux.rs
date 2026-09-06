@@ -302,14 +302,14 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     match cmd.output() {
         Ok(out) if out.status.success() => {
-            info!(target: "orchestratectl::supervise", step = label, "cleanup step ok");
+            info!(target: "taskfleet::supervise", step = label, "cleanup step ok");
             eprintln!("supervisor cleanup: {label}: ok");
             true
         }
         Ok(out) => {
             let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 step = label,
                 code = out.status.code(),
                 detail = %detail,
@@ -320,7 +320,7 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
         }
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 step = label,
                 error = %e,
                 "cleanup step could not spawn (continuing)"

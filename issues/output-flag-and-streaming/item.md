@@ -4,7 +4,7 @@ updated: 2026-06-13
 type: task
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
 commits:
 - hash: c55487d

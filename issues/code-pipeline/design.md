@@ -1,7 +1,7 @@
 # Code Pipeline — design (v2, post-panel)
 
 Spec-driven, model-tiered coding as the **default coding path** in
-orchestratectl. Expensive thinking is done once (spec) and amortized across
+taskfleet. Expensive thinking is done once (spec) and amortized across
 cheap implementation (code); a heavy model verifies **on top of a deterministic
 floor**; findings loop back until the product matches the *original intent*.
 
@@ -35,7 +35,7 @@ three owner decisions in §15 (defaults applied, flagged for override).
    human-gated merge. (A *passive, non-blocking* post-merge rollup is allowed —
    §12, decision D2.)
 4. **Self-improving — but governed — tooling.** An agent that hits a contract
-   limitation files a **structured schema-gap** into the orchestratectl repo. That
+   limitation files a **structured schema-gap** into the taskfleet repo. That
    is a *deduplicated, evidence-backed proposal for human review*, NOT
    "agent asks → field added." Runtime agents never act on undeclared fields (§13).
 5. **Harness-neutral by contract.** The code executor is chosen behind a versioned
@@ -258,7 +258,7 @@ per-feature ceilings that force `ESCALATE`/abort regardless of convergence state
   → stop, don't loop).
 
 Requires **cost instrumentation**: the orchestrator must be able to query
-real-time spend/token consumption per run. (Open: does orchestratectl meter usage
+real-time spend/token consumption per run. (Open: does taskfleet meter usage
 per node today, or must it be built — §15.)
 
 ---
@@ -383,7 +383,7 @@ baseline or escapes file-scope — so a bad autonomous decision cannot silently 
   (pipeline always runs, collapses for tiny tasks) rather than a hard escape hatch.
   *Confirm, or switch to a hard skip-spec escape.*
 
-Plus non-blocking unknowns to lock during build: does orchestratectl meter
+Plus non-blocking unknowns to lock during build: does taskfleet meter
 per-node token/cost today (§9); exact `checks`/`assertions` schema shape (§13);
 sequential-chunk git mechanics (stacked branches vs worktrees, §7).
 

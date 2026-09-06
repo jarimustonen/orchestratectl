@@ -46,7 +46,7 @@ Probe used per run:
 ```bash
 jq -c '{summary: .report.summary, discussion: .report.discussion_items,
         spinoffs: .report.spinoff_proposals, wrap: .report.wrap_up_recommendations}' \
-  ~/.orchestratectl/runs/<run-id>/nodes/n-0001.json
+  ~/.taskfleet/runs/<run-id>/nodes/n-0001.json
 # → {"summary":null,"discussion":null,"spinoffs":null,"wrap":null}
 ```
 
@@ -86,7 +86,7 @@ Worth checking in this order, given the `run wait` / node-record mismatch:
    keys like `discuss` / `wrap_up` pass validation but are dropped — if the persisted shape
    drifted from the documented one, every field would null out exactly like this).
 
-Also worth confirming: `orchestratectl node show n-0001 --run-id <id> --output json` returned
+Also worth confirming: `taskfleet node show n-0001 --run-id <id> --output json` returned
 **no output at all** during triage, which may be a second, related surfacing bug.
 
 ## Acceptance
@@ -119,7 +119,7 @@ VERIFIOITU TRIAGESSA 2026-08-16: raportteja ei ole kadonnut. Levyllä oleva kent
 
 Issuen oma vahvin vihje oli oikea: `run wait` palautti rikkaan summaryn, koska data oli koko ajan siellä. `spinoff_proposals` on aidosti 0 kaikissa neljässä — työntekijöillä ei ollut ehdotettavaa, ei pudotus. Myöskään `node show --run-id <id>` ei toimi: komento ottaa kaksi positionaalista argumenttia (`node show <RUN_ID> <NODE_ID>`).
 
-UUDELLEENRAJAUS: tiedonmenetystä ei ole, mutta ansa on aito ja toistuva. Tämä on NELJÄS sama väärä ilmoitus (@node-show-null-report, @intake-bug-orchestratectl-eb2acb9686cb, run wait -muotoero, tämä). Syy: mukana toimitettavat ohjeet kertovat miten raportti KIRJOITETAAN, mutta eivät sanaakaan siitä miten se luetaan takaisin — `last_report` ei esiinny yhdessäkään SKILL-tiedostossa. Lukija arvaa kirjoitusmuodosta `report`.
+UUDELLEENRAJAUS: tiedonmenetystä ei ole, mutta ansa on aito ja toistuva. Tämä on NELJÄS sama väärä ilmoitus (@node-show-null-report, @intake-bug-taskfleet-eb2acb9686cb, run wait -muotoero, tämä). Syy: mukana toimitettavat ohjeet kertovat miten raportti KIRJOITETAAN, mutta eivät sanaakaan siitä miten se luetaan takaisin — `last_report` ei esiinny yhdessäkään SKILL-tiedostossa. Lukija arvaa kirjoitusmuodosta `report`.
 
 Todellinen työ: (a) dokumentoi lukupinta ohjeisiin, (b) harkitse `report`-aliasta `node show`n ulostuloon, (c) yhtenäistä `run wait`in `data.runs[]` ja `run show`n `data.<kenttä>` -muotoero tai dokumentoi se. Alkuperäinen acceptance-kriteeristö perustuu pudotusoletukseen ja on vanhentunut.
 

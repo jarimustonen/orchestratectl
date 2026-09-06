@@ -12,7 +12,7 @@ closed_by: adr-decision-2
 
 # Empty-handed idle alive agent still hangs pending
 
-_Source: orchestratectl supervise (idle-unmerged review follow-up)_
+_Source: taskfleet supervise (idle-unmerged review follow-up)_
 
 ## Description
 

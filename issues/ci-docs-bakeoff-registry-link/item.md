@@ -17,7 +17,7 @@ The `docs` job (cargo doc) fails on `main` (run 31509845355, commit 9c01fba, and
 ## Failure
 ```
 error: unresolved link to `bakeoff::registry`
-error: could not document `orchestratectl`
+error: could not document `taskfleet`
 ##[error]Process completed with exit code 101.
 ```
 `cargo doc` runs with `-D warnings` (or `RUSTDOCFLAGS=-D rustdoc::broken_intra_doc_links`), so the broken intra-doc link is a hard error.

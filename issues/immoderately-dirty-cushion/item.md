@@ -14,7 +14,7 @@ closed: 2026-08-06
 Follow-up from `pipeline-parallel-chunks` (concurrent DAG-wave scheduling).
 
 The concurrent wave-build path (`build_chunk_in_wave` in
-`crates/octl-cli/src/pipeline/live/mod.rs`) deliberately does NOT do adaptive tier
+`crates/taskfleet-cli/src/pipeline/live/mod.rs`) deliberately does NOT do adaptive tier
 promotion (design §3) — a wave chunk that exhausts its floor re-code budget blocks
 (preserved), whereas the strictly-sequential path (`process_chunk_sequential`)
 promotes the chunk to the next model tier before giving up. Promotion mutates shared

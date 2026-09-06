@@ -10,11 +10,11 @@ holds only the **active handoff** and a **compact stint archive**.
 
 ## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-22 (**stint 8: v0.5.0 shipped; worker control-plane design sequence prepared**)
 
-**Ownership is settled.** The release-recovery workers `01m0fggg0zg9a5ezcdgpeq5r4g`, `01m0hj9bnnfamteydmt7qvyh64`, and `01m0ja657ejjjyc7j7230jf42n` are terminal `done`, report `landed: true`, and have no worktree or recoverable work. The only globally listed non-terminal rows are old `stillborn: true` records with no source repository, worktree, supervisor, or ownership; none belongs to live orchestratectl work.
+**Ownership is settled.** The release-recovery workers `01m0fggg0zg9a5ezcdgpeq5r4g`, `01m0hj9bnnfamteydmt7qvyh64`, and `01m0ja657ejjjyc7j7230jf42n` are terminal `done`, report `landed: true`, and have no worktree or recoverable work. The only globally listed non-terminal rows are old `stillborn: true` records with no source repository, worktree, supervisor, or ownership; none belongs to live taskfleet work.
 
 **What landed and shipped.** `distinguish-untriaged-work` now keeps unaccepted intake distinct from explicit human deferral. The release wrapper recognizes the proven ossctl 0.9 held-tag checkpoint, and its pre-tag protocol was separately revalidated for exactly ossctl 0.10.0 while preserving the exact-SHA CI gate and abandoned-run rejection. The full integrated gate passed after both fixes. v0.5.0 was then published through the tag-triggered pipeline to crates.io, GitHub Release, cargo-dist binaries, and Homebrew; release run `01M0JF9T187YJVNZAT2STRCZGH` is completed with all four targets verified and no in-flight release. The two earlier failed journals remain abandoned and must never be resumed.
 
-**Repository-local truth.** `main` was clean and synchronized before this handoff edit. Normal repository work has no stint deploy step: source HEAD is validated with repository-local builds and explicit `./target/release/orchestratectl …`, without replacing the user's installed release or bundled instructions. Installation and upgrades belong to the published distribution channels, outside repository build/test work.
+**Repository-local truth.** `main` was clean and synchronized before this handoff edit. Normal repository work has no stint deploy step: source HEAD is validated with repository-local builds and explicit `./target/release/taskfleet …`, without replacing the user's installed release or bundled instructions. Installation and upgrades belong to the published distribution channels, outside repository build/test work.
 
 **Agreed product direction — design the whole worker control plane before implementation.** First, `worker-telemetry-protocol` designs a harness-neutral told-fact lease/status contract and a separate pi.dev adapter; silence may mean stale telemetry but never inferred success, failure, or teardown, and Claude remains explicit-interactive unless it gains a real adapter. Second, `add-configurable-agent` revises its historical profile design against that protocol, including telemetry capability, autonomy eligibility, residency, fallback, and effective-policy provenance. Third, `worker-control-plane-review` presents both designs together for Jari's explicit approval. Only after that checkpoint are production implementation slices filed and scheduled. `end-end-stint` remains the wider durable start → work → handoff → user-checkpoint loop that must consume, not duplicate, these decisions.
 
@@ -60,13 +60,13 @@ these stints are in `AGENTS.md`.
   version-match check before any publish step — proven live by that release), `create-idempotency-lease-recovery`
   (durable creator lease on pre-publication reservations; follow-up `recover-unkeyed-child-publication` closed
   `wontfix` on Jari's call), `config-show-layered-view` (config schema v2, layered tolerant inspection). Two CI-reds:
-  `ci-red-release-mode-injection` (debug-only `OCTL_TEST_*` hooks vs CI's `--release`) and
+  `ci-red-release-mode-injection` (debug-only `TASKFLEET_TEST_*` hooks vs CI's `--release`) and
   `etxtbsy-cross-module-stub-race` (the third ETXTBSY; killed structurally by moving CI to cargo-nextest
   process-per-test rather than re-mutexing). Both are inputs to the stint-6 green-gate fix.
 - **Review session (2026-08-17, after stint 4).** Fable-driven repo review + doc cleanup, parallel to the
   `add-configurable-agent` design session (design.md v2). `AGENTS.md` rewritten for consistency; `README.md` rewritten
   against 0.2.2 reality; stints 1–3 compressed into this archive. Code: `cut-plan-module` (dead 2013-line
-  `octl-core/src/plan.rs` removed — the breaking entry that made the next release 0.3.0) + `harness-pi-default`
+  `taskfleet-core/src/plan.rs` removed — the breaking entry that made the next release 0.3.0) + `harness-pi-default`
   (built-in default flipped to `pi` per ADR 0001 D4). Epics `code-pipeline` + `lifecycle-architecture-review` closed.
 - **Stint 4 (2026-08-17, v0.2.2).** Full round + release + a caught mistake: 4 parallel spinoffs (all first-spawn),
   v0.2.2 cut, then CI caught one fix incomplete and a 5th spinoff finished it. Landed: `pi-spinoff-batch` (staged
@@ -112,10 +112,10 @@ these stints are in `AGENTS.md`.
 
 ## Piialiisan bugiraportit
 
-- [ ] 🐛 Piialiisan bugiraportti: run create omits source_repo from fresh run manifest — jari via Telegram ([`intake-bug-orchestratectl-19a653fff4c9`](issues/intake-bug-orchestratectl-19a653fff4c9/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: run show cannot identify a run repository once its worktree is gone — jari via Telegram ([`intake-feature-orchestratectl-f706c536df01`](issues/intake-feature-orchestratectl-f706c536df01/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: Expose source_repo in run show JSON — jari via Telegram ([`intake-feature-orchestratectl-635e9e31cdf2`](issues/intake-feature-orchestratectl-635e9e31cdf2/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated concurrent agents — jari via Telegram ([`intake-bug-orchestratectl-53fa835cfa74`](issues/intake-bug-orchestratectl-53fa835cfa74/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: Add teardown for terminal failed runs with preserved worktrees — jari via Telegram ([`intake-feature-orchestratectl-41343c4dd3e4`](issues/intake-feature-orchestratectl-41343c4dd3e4/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated global runs — jari via Telegram ([`intake-bug-orchestratectl-6edf517c691a`](issues/intake-bug-orchestratectl-6edf517c691a/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stint-start should safely rebase a clean diverged main — jari via Telegram ([`intake-feature-orchestratectl-5565259bd11f`](issues/intake-feature-orchestratectl-5565259bd11f/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: run create omits source_repo from fresh run manifest — jari via Telegram ([`intake-bug-taskfleet-19a653fff4c9`](issues/intake-bug-taskfleet-19a653fff4c9/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: run show cannot identify a run repository once its worktree is gone — jari via Telegram ([`intake-feature-taskfleet-f706c536df01`](issues/intake-feature-taskfleet-f706c536df01/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: Expose source_repo in run show JSON — jari via Telegram ([`intake-feature-taskfleet-635e9e31cdf2`](issues/intake-feature-taskfleet-635e9e31cdf2/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated concurrent agents — jari via Telegram ([`intake-bug-taskfleet-53fa835cfa74`](issues/intake-bug-taskfleet-53fa835cfa74/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: Add teardown for terminal failed runs with preserved worktrees — jari via Telegram ([`intake-feature-taskfleet-41343c4dd3e4`](issues/intake-feature-taskfleet-41343c4dd3e4/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated global runs — jari via Telegram ([`intake-bug-taskfleet-6edf517c691a`](issues/intake-bug-taskfleet-6edf517c691a/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: stint-start should safely rebase a clean diverged main — jari via Telegram ([`intake-feature-taskfleet-5565259bd11f`](issues/intake-feature-taskfleet-5565259bd11f/item.md))

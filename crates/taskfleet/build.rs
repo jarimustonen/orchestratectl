@@ -30,7 +30,7 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("cargo:rustc-env=ORCHESTRATECTL_GIT_COMMIT={commit}");
+    println!("cargo:rustc-env=TASKFLEET_GIT_COMMIT={commit}");
 
     // Set up rerun triggers so the commit env var refreshes when HEAD
     // moves. In a worktree, `.git` is a *file* whose contents are

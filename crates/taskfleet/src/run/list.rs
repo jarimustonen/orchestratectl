@@ -52,7 +52,7 @@ const STILLBORN_LIST_GRACE_SECS: i64 = 900;
 
 /// Env override for [`STILLBORN_LIST_GRACE_SECS`] (whole seconds; unparseable →
 /// default). Tests set `0` to flag a freshly-created stillborn run immediately.
-const STILLBORN_LIST_GRACE_ENV: &str = "OCTL_STILLBORN_LIST_GRACE_SECS";
+const STILLBORN_LIST_GRACE_ENV: &str = "TASKFLEET_STILLBORN_LIST_GRACE_SECS";
 
 /// The effective stillborn grace, honoring [`STILLBORN_LIST_GRACE_ENV`].
 fn stillborn_list_grace() -> chrono::Duration {

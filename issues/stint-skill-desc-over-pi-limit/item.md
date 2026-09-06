@@ -28,12 +28,12 @@ These are the ONLY two bundled skills over the limit (scan 2026-08-15: all other
 
 ## Fix
 
-Trim the `description:` frontmatter in `crates/octl-cli/skills/stint-start/SKILL.template.md` (1211) and `crates/octl-cli/skills/stint-handoff/SKILL.template.md` (1142) to <=1024 chars EACH. This is a careful trim, NOT blind truncation — the description drives skill selection, so keep the trigger phrases (Finnish + English invocation cues: "aloitetaan rupeama", "jatketaan @TODO.md", "päätetään rupeama", "wrap up the stint", bare-invocation notes) and the NOT-this-skill disambiguators. Drop redundant prose.
+Trim the `description:` frontmatter in `crates/taskfleet-cli/skills/stint-start/SKILL.template.md` (1211) and `crates/taskfleet-cli/skills/stint-handoff/SKILL.template.md` (1142) to <=1024 chars EACH. This is a careful trim, NOT blind truncation — the description drives skill selection, so keep the trigger phrases (Finnish + English invocation cues: "aloitetaan rupeama", "jatketaan @TODO.md", "päätetään rupeama", "wrap up the stint", bare-invocation notes) and the NOT-this-skill disambiguators. Drop redundant prose.
 
 ## Done
 
 - Both descriptions <=1024 chars.
-- Redeploy: `cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor` (expect 0/0), and confirm pi.dev no longer warns on load.
+- Redeploy: `cargo install --path crates/taskfleet-cli --force && taskfleet skill install --force && taskfleet doctor` (expect 0/0), and confirm pi.dev no longer warns on load.
 - Consider a doctor/CI guard that flags any bundled description >1024 so this can't regress.
 
 Lane D (bundled skill prose).

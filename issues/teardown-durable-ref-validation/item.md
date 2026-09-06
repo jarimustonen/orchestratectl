@@ -19,4 +19,4 @@ Follow-up from /llm-review of detached-head-teardown-commit-loss (openai D2, dee
 
 ### 2026-08-16T15:33:24Z · @claude
 
-Suljettu: uhkamalli ei ole todellinen. Varautuu vioittuneeseen tai vihamieliseen manifest-tilaan (raaka OID, tagi, HEAD, revisioilmaus source_branch-kentässä) — kentän kirjoittaa orchestratectl itse. Issue toteaa omassa tekstissään: 'onko tämä saavutettavissa nykyisestä run create -polusta on vahvistamatta'. Tyhjän merkkijonon tapaus on jo korjattu.
+Suljettu: uhkamalli ei ole todellinen. Varautuu vioittuneeseen tai vihamieliseen manifest-tilaan (raaka OID, tagi, HEAD, revisioilmaus source_branch-kentässä) — kentän kirjoittaa taskfleet itse. Issue toteaa omassa tekstissään: 'onko tämä saavutettavissa nykyisestä run create -polusta on vahvistamatta'. Tyhjän merkkijonon tapaus on jo korjattu.

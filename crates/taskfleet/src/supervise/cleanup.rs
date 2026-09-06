@@ -146,7 +146,7 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
             // is legitimately still live. Surface it each tick so an operator can
             // see why the run is not completing (llm-review finding).
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 run_id = %paths.run_id.as_str(),
                 error = %e,
                 "rollup: cannot read node statuses from the event log; not terminalizing this tick"
@@ -329,7 +329,7 @@ fn is_synthetic_default_window(name: &str) -> bool {
 /// cleanup, so an append failure is itself swallowed.
 fn record_session_killed(paths: &RunPaths, session: &str) {
     info!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         session,
         "killed empty managed headless tmux session after last managed window torn down"
     );
@@ -339,7 +339,7 @@ fn record_session_killed(paths: &RunPaths, session: &str) {
     if let Err(e) = append_and_apply_event(paths, "cleanup.session_killed", None, Some(&key), data)
     {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             session,
             error = %e,
             "failed to append cleanup.session_killed (continuing)"
@@ -352,7 +352,7 @@ fn record_session_killed(paths: &RunPaths, session: &str) {
 /// by run id; an append failure is swallowed.
 fn record_session_retained(paths: &RunPaths, session: &str) {
     info!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         session,
         "managed headless tmux session is attached; leaving it for the human"
     );
@@ -363,7 +363,7 @@ fn record_session_retained(paths: &RunPaths, session: &str) {
         append_and_apply_event(paths, "cleanup.session_retained", None, Some(&key), data)
     {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             session,
             error = %e,
             "failed to append cleanup.session_retained (continuing)"
@@ -1111,7 +1111,7 @@ fn close_tmux_window(paths: &RunPaths, n: &Node, tmux: &str) {
         if let Some(recovered) = mux.find_window_by_path(socket, session, worktree) {
             if recovered != target && mux.kill_window(socket, &recovered) {
                 info!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     node = %n.node_id,
                     primary = %target,
                     recovered = %recovered,
@@ -1143,7 +1143,7 @@ fn record_window_missing(paths: &RunPaths, n: &Node, target: &str) {
         "window-name"
     };
     warn!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         node = %n.node_id,
         window = %target,
         method,
@@ -1173,7 +1173,7 @@ fn record_window_missing(paths: &RunPaths, n: &Node, target: &str) {
         data,
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %n.node_id,
             error = %e,
             "failed to append cleanup.window_missing (continuing)"
@@ -1188,7 +1188,7 @@ fn record_window_missing(paths: &RunPaths, n: &Node, target: &str) {
 /// `(run, node)` so a supervisor restart re-running cleanup appends at most once.
 fn record_worktree_missing(paths: &RunPaths, n: &Node, worktree_path: &str) {
     warn!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         node = %n.node_id,
         worktree_path,
         "worktree dir already gone during cleanup; recording cleanup.worktree_missing (run not failed)"
@@ -1214,7 +1214,7 @@ fn record_worktree_missing(paths: &RunPaths, n: &Node, worktree_path: &str) {
         data,
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %n.node_id,
             error = %e,
             "failed to append cleanup.worktree_missing (continuing)"
@@ -1229,7 +1229,7 @@ fn record_worktree_missing(paths: &RunPaths, n: &Node, worktree_path: &str) {
 /// `(run, node)`.
 fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail: &str) {
     warn!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         node = %n.node_id,
         branch,
         detail,
@@ -1256,7 +1256,7 @@ fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail:
         data,
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %n.node_id,
             error = %e,
             "failed to append cleanup.branch_remove_failed (continuing)"
@@ -1287,7 +1287,7 @@ fn record_branch_preserved(
 ) {
     let branch_display = branch.unwrap_or("<none>");
     info!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         node = %n.node_id,
         branch = branch_display,
         worktree_path,
@@ -1316,7 +1316,7 @@ fn record_branch_preserved(
         data,
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %n.node_id,
             error = %e,
             "failed to append cleanup.branch_preserved (continuing)"
@@ -1579,7 +1579,7 @@ mod tests {
         let n = forge_node(
             &paths,
             "n-0001",
-            json!({ "tmux_session": "octl", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
+            json!({ "tmux_session": "taskfleet", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
         );
         let tmux = fake_tmux(tmp.path(), "");
 
@@ -1603,7 +1603,7 @@ mod tests {
         let n = forge_node(
             &paths,
             "n-0001",
-            json!({ "tmux_session": "octl", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
+            json!({ "tmux_session": "taskfleet", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
         );
         // kill-window fails (window not found); list-windows lists an unrelated
         // window whose pane is NOT in the worktree → no path recovery.
@@ -1678,7 +1678,7 @@ mod tests {
         let n = forge_node(
             &paths,
             "n-0001",
-            json!({ "tmux_session": "octl", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
+            json!({ "tmux_session": "taskfleet", "tmux_window_id": "@42", "worktree_path": "/fake/wt" }),
         );
         let tmux = fake_tmux(
             tmp.path(),

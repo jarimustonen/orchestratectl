@@ -13,53 +13,15 @@ use std::process::Command;
 fn bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     // Version initializes logging, so keep it away from the developer's real
-    // default homes and from any populated legacy home on the host.
+    // default home.
     let account_home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/test-homes/version")
         .join(std::process::id().to_string());
     std::fs::create_dir_all(&account_home).unwrap();
     command
-        .env("TASKFLEET_HOME", account_home.join("state"))
         .env("HOME", &account_home)
-        .env_remove("ORCHESTRATECTL_HOME");
+        .env_remove("TASKFLEET_HOME");
     command
-}
-
-#[test]
-fn invocation_identity_is_not_inferred_from_argv0_or_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let renamed = dir.path().join("orchestratectl");
-    if std::fs::hard_link(env!("CARGO_BIN_EXE_taskfleet"), &renamed).is_err() {
-        std::fs::copy(env!("CARGO_BIN_EXE_taskfleet"), &renamed).unwrap();
-    }
-
-    let help = Command::new(&renamed)
-        .arg("--help")
-        .env("HOME", dir.path())
-        .env("TASKFLEET_HOME", dir.path().join("state"))
-        .env("PATH", "")
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let help = String::from_utf8(help.stdout).unwrap();
-    assert!(help.starts_with("Orchestrate AI-agent workflows"));
-    assert!(
-        help.contains("Usage: taskfleet [OPTIONS] <COMMAND>"),
-        "{help}"
-    );
-    assert!(!help.contains("Usage: orchestratectl"), "{help}");
-
-    let version = Command::new(&renamed)
-        .args(["--output", "text", "version"])
-        .env("HOME", dir.path())
-        .env("TASKFLEET_HOME", dir.path().join("state"))
-        .env("PATH", "")
-        .output()
-        .unwrap();
-    assert!(version.status.success());
-    assert!(String::from_utf8(version.stdout)
-        .unwrap()
-        .starts_with("taskfleet "));
 }
 
 #[test]

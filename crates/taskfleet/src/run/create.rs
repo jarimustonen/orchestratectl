@@ -323,7 +323,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // `--skip-materialize` and is set by the `bin()` helper in
     // `tests/`. Production callers never set it.
     let skip_materialize =
-        args.skip_materialize || std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok();
+        args.skip_materialize || std::env::var("TASKFLEET_TEST_SKIP_MATERIALIZE").is_ok();
     let prompt_source = if skip_materialize {
         None
     } else {
@@ -458,7 +458,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     });
                 }
                 ExistingReservation::CreatorLive => {
-                    let wait_ms = std::env::var("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS")
+                    let wait_ms = std::env::var("TASKFLEET_IDEMPOTENCY_PUBLISH_WAIT_MS")
                         .ok()
                         .and_then(|v| v.trim().parse::<u64>().ok())
                         .unwrap_or(30_000);
@@ -790,8 +790,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // It is reachable only through the test-only skeleton path, never for a
         // production materialization.
         if cfg!(debug_assertions)
-            && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok_and(|v| v == "1")
-            && std::env::var("OCTL_TEST_FAIL_AFTER_PUBLISH").is_ok_and(|v| v == "1")
+            && std::env::var("TASKFLEET_TEST_SKIP_MATERIALIZE").is_ok_and(|v| v == "1")
+            && std::env::var("TASKFLEET_TEST_FAIL_AFTER_PUBLISH").is_ok_and(|v| v == "1")
         {
             return Err(CliError::system(
                 "test_fail_after_publish",
@@ -802,7 +802,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `child.spawned` here. The idempotency key was already reserved before
         // materialization (see `reserve` above), same as the materialized path.
         emit_child_spawned()?;
-        // A `--skip-materialize` / `OCTL_TEST_SKIP_MATERIALIZE` run is a pure
+        // A `--skip-materialize` / `TASKFLEET_TEST_SKIP_MATERIALIZE` run is a pure
         // skeleton with NO supervisor (the only kind that needed a supervisor on
         // this path was the removed `orchestrate` driver).
         return emit(EmitInput {

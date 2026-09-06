@@ -10,7 +10,7 @@ commits:
   summary: implement 'run wait' subcommand, tests, SKILL migration
 ---
 
-# Add 'orchestratectl run wait' completion-blocking primitive
+# Add 'taskfleet run wait' completion-blocking primitive
 
 ## Description
 
@@ -18,7 +18,7 @@ Add a `run wait <run-id>...` subcommand that **blocks until one or more
 runs reach a terminal state** and emits a structured summary, replacing
 the hand-rolled poll loops every SKILL and agent currently writes.
 
-Proposed in /tmp/orchestratectl-run-wait-proposal.md (2026-06-29) as a
+Proposed in /tmp/taskfleet-run-wait-proposal.md (2026-06-29) as a
 follow-up to two real failures on a deutschpad orchestration session:
 multi-run zsh word-split bug (see issue
 `skill-multi-run-poll-zsh-unsafe`) and the long-standing
@@ -27,7 +27,7 @@ multi-run zsh word-split bug (see issue
 ## Problem this solves
 
 Every caller that wants to "do X after the spinoff finishes" hand-rolls
-a poll loop around `orchestratectl run show ... | jq '.data.manifest.status'`.
+a poll loop around `taskfleet run show ... | jq '.data.manifest.status'`.
 This is fragile and has produced real failures:
 
 1. **Shell-portability bugs** — `for id in $ids` silently breaks under
@@ -50,7 +50,7 @@ that knowledge from file polls.
 ## Synopsis
 
 ```
-orchestratectl run wait <run-id>... [flags]
+taskfleet run wait <run-id>... [flags]
 ```
 
 ## Flags
@@ -109,12 +109,12 @@ instead of in every caller's shell.
 Acceptance criteria for v0.1.0:
 
 - subcommand exists, --json envelope honoured, exit codes per above
-- integration test in `crates/octl-cli/tests/` covering `--all`
+- integration test in `crates/taskfleet-cli/tests/` covering `--all`
   success, `--any` race, `--timeout` exit code, `--fail-on-error` exit
   code
 - every `worktree-*` SKILL.template.md's "Following progress" section
-  replaced with a single `orchestratectl run wait` call
-- `orchestratectl skill install --force` redeployed
+  replaced with a single `taskfleet run wait` call
+- `taskfleet skill install --force` redeployed
 - closes `skill-multi-run-poll-zsh-unsafe` as superseded
 
 ## Migration / docs
@@ -128,13 +128,13 @@ Acceptance criteria for v0.1.0:
 ## Interaction with agent harnesses
 
 A blocking `run wait` plays well with background execution: the agent
-runs `orchestratectl run wait <ids...> --all` as a single background
+runs `taskfleet run wait <ids...> --all` as a single background
 command, the harness notifies on process exit. One process, one exit,
 one notification — strictly better than a hand-rolled background poll.
 
 ## Source
 
-Proposal at `/tmp/orchestratectl-run-wait-proposal.md` (transient — copy
+Proposal at `/tmp/taskfleet-run-wait-proposal.md` (transient — copy
 into this issue's `plan.md` if a longer-form design pass is needed
 before implementation).
 

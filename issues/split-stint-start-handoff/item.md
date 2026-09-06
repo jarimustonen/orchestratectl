@@ -35,13 +35,13 @@ plus a shared reference file, and fully decouple bug intake. Settled with Jari i
 4. **Shared reference file under stint-start** — extract the shared prose (Execution-DAG
    convention + notation/rules, operating-policy reading, project-prerequisites) into a
    reference file UNDER the `stint-start` skill dir (e.g.
-   `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` or similar); `stint-handoff`
+   `crates/taskfleet-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` or similar); `stint-handoff`
    LINKS to it. No separate `stint-shared` skill.
 
 ## Mechanics / done criteria
-- Both new skills are BUNDLED: `crates/octl-cli/skills/stint-start/SKILL.template.md` and
+- Both new skills are BUNDLED: `crates/taskfleet-cli/skills/stint-start/SKILL.template.md` and
   `.../stint-handoff/SKILL.template.md`, wired into the skill install registry so
-  `orchestratectl skill install` installs them and `orchestratectl doctor` reports
+  `taskfleet skill install` installs them and `taskfleet doctor` reports
   `skill.sync.stint-start` / `skill.sync.stint-handoff` ok.
 - Old bundled `stint` skill removed from the registry. JUDGMENT CALL to record in the
   terminal report: whether to keep a thin `stint`→`stint-start` alias for muscle-memory

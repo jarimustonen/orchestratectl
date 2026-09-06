@@ -12,7 +12,7 @@ closed_by: adr-decision-2
 
 # orchestrate: integration branch created without a worktree → child run merge fails with merge_failed
 
-_Version: orchestratectl 0.1.0. Source: `/orchestrate` skill (integration-branch setup) + `run merge` backend (merge.sh)._
+_Version: taskfleet 0.1.0. Source: `/orchestrate` skill (integration-branch setup) + `run merge` backend (merge.sh)._
 
 ## Description
 
@@ -22,7 +22,7 @@ _Version: orchestratectl 0.1.0. Source: `/orchestrate` skill (integration-branch
 The `/orchestrate` skill creates the shared integration branch with a plain
 `git branch <integration> <source>` (SKILL.md § "Create the integration branch",
 ~line 189). This makes a ref but **no worktree**. When a child
-(`--kind orchestrated`) later runs `orchestratectl run merge <child-run-id>`, the
+(`--kind orchestrated`) later runs `taskfleet run merge <child-run-id>`, the
 merge targets that integration branch as its `source_branch`, and the merge
 backend (`merge.sh`) fails:
 
@@ -39,10 +39,10 @@ merge cannot land.
 
 ## Reproduce
 
-1. `orchestratectl run create --kind orchestrate …` (driver run).
+1. `taskfleet run create --kind orchestrate …` (driver run).
 2. `git branch orchestrate/<slug>-<date> main` (as the skill instructs).
-3. Spawn a child: `orchestratectl run create --kind orchestrated --source-branch orchestrate/<slug>-<date> --parent-run-id <drv> …`.
-4. Child commits its work, then `orchestratectl run merge <child-run-id>`.
+3. Spawn a child: `taskfleet run create --kind orchestrated --source-branch orchestrate/<slug>-<date> --parent-run-id <drv> …`.
+4. Child commits its work, then `taskfleet run merge <child-run-id>`.
 5. → `merge_failed` (see message above), even though the child branch is a clean
    fast-forward onto the integration branch and `--dry-run` succeeds.
 

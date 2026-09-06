@@ -5,7 +5,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/publish-crates-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/release" "$tmp/repo/crates/taskfleet-core" "$tmp/repo/crates/taskfleet" "$tmp/repo/compat/orchestratectl"
+mkdir -p "$tmp/bin" "$tmp/repo/scripts" "$tmp/repo/release" "$tmp/repo/crates/taskfleet-core" "$tmp/repo/crates/taskfleet"
 fixture_root="$(cd "$tmp/repo" && pwd -P)"
 cp "$repo_root/scripts/publish-crates.sh" "$repo_root/scripts/validate-release-topology.sh" "$tmp/repo/scripts/"
 cp "$repo_root/release/taskfleet-release.json" "$tmp/repo/release/"
@@ -50,8 +50,8 @@ if [[ "$1" == --version ]]; then echo 'cargo 1.85.0 (fixture)'; exit 0; fi
 if [[ "$1" == metadata ]]; then
   jq -n --arg root "$FIXTURE_ROOT" '{packages:[
     {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
-    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]},
-    {name:"orchestratectl",version:"1.2.3",manifest_path:($root+"/compat/orchestratectl/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"compat",dependencies:[{name:"taskfleet",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
+    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
+
   ]}'
   exit 0
 fi
@@ -65,7 +65,7 @@ if [[ "$1" == package ]]; then
     rm -rf "$root"
   }
   if [[ "$*" == *--workspace* ]]; then
-    make_archive taskfleet-core; make_archive taskfleet; make_archive orchestratectl
+    make_archive taskfleet-core; make_archive taskfleet
   else
     make_archive "${*: -1}"
   fi
@@ -159,11 +159,11 @@ run_case() {
   if [[ -n "$diagnostic" ]]; then grep -F "$diagnostic" "$tmp/$mode.err" >/dev/null || { cat "$tmp/$mode.err" >&2; exit 1; }; fi
 }
 
-# The load-bearing plan/package path emits exactly all three archives.
+# The load-bearing plan/package path emits exactly both archives.
 rm -rf "$tmp/repo/target"; : >"$tmp/cargo.log"
 env -i HOME="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" \
   SOURCE_COMMIT=1111111111111111111111111111111111111111 "$tmp/repo/scripts/publish-crates.sh" package >/dev/null
-[[ "$(find "$tmp/repo/target/package" -name '*.crate' | wc -l | tr -d ' ')" == 3 ]]
+[[ "$(find "$tmp/repo/target/package" -name '*.crate' | wc -l | tr -d ' ')" == 2 ]]
 
 run_case match 0
 ! grep -q '^publish ' "$tmp/cargo.log" || { echo 'matching existing crate was republished' >&2; exit 1; }

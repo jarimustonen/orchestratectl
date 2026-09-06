@@ -5,7 +5,7 @@ type: feature
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 commits:
 - hash: d191c8c

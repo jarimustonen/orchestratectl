@@ -27,7 +27,7 @@ for id in $ids; do ...; done        # <-- silently broken under zsh
 The agent's background command ran under **zsh** (the login shell), and
 zsh does NOT word-split unquoted parameter expansions. The loop iterated
 **once** with the entire three-id string as a single value;
-`orchestratectl run show "<three ids>"` returned empty; the poll
+`taskfleet run show "<three ids>"` returned empty; the poll
 concluded "not all terminal" and slept forever (`sleep 45` loop). All
 three runs had actually finished and merged — the poll just never
 noticed.
@@ -48,7 +48,7 @@ under zsh.
 
 ## Fix
 
-In every `crates/octl-cli/skills/*/SKILL.template.md` that includes a
+In every `crates/taskfleet-cli/skills/*/SKILL.template.md` that includes a
 "Following progress" / "Completion polling" / multi-run loop, replace
 the `for id in $ids` pattern with one of:
 
@@ -63,19 +63,19 @@ the `for id in $ids` pattern with one of:
 
 ## Likely supersession by `run-wait-subcommand`
 
-If the proposed `orchestratectl run wait <ids...>` subcommand lands
+If the proposed `taskfleet run wait <ids...>` subcommand lands
 (see issue `run-wait-subcommand`), the SKILL templates' multi-run
 polling snippet becomes a single
-`orchestratectl run wait <id1> <id2> <id3>` call — the whole bug class
+`taskfleet run wait <id1> <id2> <id3>` call — the whole bug class
 disappears. Keep this issue open as the docs-only fast fix in case
 `run wait` slips; close as superseded once `run wait` is wired into
 the templates.
 
 ## Files to touch
 
-`crates/octl-cli/skills/worktree-spinoff/SKILL.template.md` and any
+`crates/taskfleet-cli/skills/worktree-spinoff/SKILL.template.md` and any
 sibling SKILL.template.md whose progress-polling section uses
 `for id in $ids` (grep the skills/ tree). After editing, redeploy with
-`orchestratectl skill install --force` and verify
-`orchestratectl doctor`.
+`taskfleet skill install --force` and verify
+`taskfleet doctor`.
 

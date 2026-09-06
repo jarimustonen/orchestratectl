@@ -4,7 +4,7 @@ updated: 2026-06-28
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 commits:
 - hash: e583d2a

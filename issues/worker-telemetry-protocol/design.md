@@ -1,7 +1,7 @@
 # Worker telemetry protocol — simplified Phase 1 design
 
 **Status:** approved product direction; design only
-**Scope:** a harness-neutral advisory sample in orchestratectl and a separately owned pi.dev adapter
+**Scope:** a harness-neutral advisory sample in taskfleet and a separately owned pi.dev adapter
 
 ## 1. Product decision
 
@@ -11,7 +11,7 @@ Worker telemetry answers two questions for the calling agent:
 2. how fresh is that report?
 
 The answer is advisory. A caller may use the state and freshness as evidence when
-judging what to inspect or do next. Orchestratectl itself does not convert
+judging what to inspect or do next. Taskfleet itself does not convert
 telemetry into run truth: telemetry cannot synthesize a report, mark work landed,
 change run or node status, satisfy `run wait`, classify a terminal outcome,
 authorize retry, or authorize teardown. `run merge` remains the only success
@@ -39,7 +39,7 @@ The adapter reports one state:
   update.
 
 `settled` and `shutdown` are observations, not completion. The worker may still
-need to commit and run `orchestratectl run merge`.
+need to commit and run `taskfleet run merge`.
 
 For `tool_running`, the adapter may also report a bounded
 `active_tool_count` (1–32) and a sanitized `tool_name` only when exactly one tool
@@ -55,7 +55,7 @@ diagnostics.
 ## 3. Freshness
 
 The adapter sends immediately when the state changes and refreshes the unchanged
-state every 30 seconds while the pi session is alive. Orchestratectl stamps the
+state every 30 seconds while the pi session is alive. Taskfleet stamps the
 receive time. A report is `current` for 90 seconds and `stale` at
 `now >= received_at + 90s`.
 
@@ -76,10 +76,10 @@ attempt number through environment variables. The adapter submits those values
 to a public command:
 
 ```bash
-orchestratectl node telemetry update \
-  --run-id "$OCTL_RUN_ID" \
-  --node-id "$OCTL_NODE_ID" \
-  --attempt "$OCTL_ATTEMPT" \
+taskfleet node telemetry update \
+  --run-id "$TASKFLEET_RUN_ID" \
+  --node-id "$TASKFLEET_NODE_ID" \
+  --attempt "$TASKFLEET_ATTEMPT" \
   --state tool_running \
   --active-tool-count 1 \
   --tool-name bash \
@@ -195,12 +195,12 @@ The adapter is a separate pi extension/package. It uses only documented public
 pi lifecycle hooks (`session_start`, `agent_start`, `agent_settled`,
 `tool_execution_start`, `tool_execution_end`, and `session_shutdown`) and a
 bounded subprocess call to the public telemetry command. It does not import
-orchestratectl internals, pi extension-manager internals, EventBus internals,
+taskfleet internals, pi extension-manager internals, EventBus internals,
 background-process managers, session JSONL, or private log files.
 
 Executable agent commands and adapter arguments are user-owned configuration.
 Repository configuration may select a named profile but cannot define or alter
-commands or adapter paths. Orchestratectl does not auto-install, auto-update,
+commands or adapter paths. Taskfleet does not auto-install, auto-update,
 pin, attest, or police the adapter package and does not disable ambient pi
 extensions. Installation and package trust remain ordinary user/operator
 responsibilities, like other pi extensions with full user permissions.
@@ -240,7 +240,7 @@ cleanup effect.
 
 ## 8. Ownership and implementation boundary
 
-Orchestratectl owns the strict update DTO, attempt validation, bounded atomic
+Taskfleet owns the strict update DTO, attempt validation, bounded atomic
 sample, freshness rendering, read surfaces, and negative state-integrity tests.
 The external adapter owns public-event translation, in-memory tool pairing,
 coalescing/refresh, privacy filtering, and bounded shutdown behavior. End-to-end

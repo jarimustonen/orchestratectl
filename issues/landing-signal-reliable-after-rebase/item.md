@@ -61,7 +61,7 @@ first-class, documented landing signal:
 
 ### Part 2 — bundled skill docs: fix the misleading instruction
 
-`stint` and `worktree-spinoff` (installed via `orchestratectl skill install`)
+`stint` and `worktree-spinoff` (installed via `taskfleet skill install`)
 tell the caller to git-verify via `git merge-base --is-ancestor <branch>
 <target>`. Update that guidance to:
 
@@ -80,6 +80,6 @@ high-parallel scenario /stint exists for. It risks (a) redundant re-spawns and
 
 ## Environment
 
-- orchestratectl 0.1.0 (commit a54f0ff6), bundled `stint` + `worktree-spinoff` skills.
+- taskfleet 0.1.0 (commit a54f0ff6), bundled `stint` + `worktree-spinoff` skills.
 - Observed in a 3-round /stint on 3dbear-monorepo where `origin/main` moved ~19
   commits under the session via parallel course-work sessions.

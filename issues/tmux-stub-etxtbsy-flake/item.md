@@ -21,12 +21,12 @@ closed: 2026-08-17
 ## Description
 
 CI on `main` is red. Run
-[31964603146](https://github.com/jarimustonen/orchestratectl/actions/runs/31964603146)
+[31964603146](https://github.com/jarimustonen/taskfleet/actions/runs/31964603146)
 (commit `febc554`, the v0.2.1 release commit) failed on `ubuntu-latest`:
 
 ```
 thread 'multiplexer::tmux::tests::new_session_surfaces_nonzero' panicked at
-crates/octl-cli/src/multiplexer/tmux.rs:495:22:
+crates/taskfleet-cli/src/multiplexer/tmux.rs:495:22:
 expected NonZero, got Spawn { op: "new-session", source:
   Os { code: 26, kind: ExecutableFileBusy, message: "Text file busy" } }
 
@@ -56,7 +56,7 @@ whole module and removes a class of nondeterministic CI failures.
 
 Flaky red CI on `main`. The v0.2.1 release itself is fine — `Release` and
 `Publish to crates.io` both succeeded and the
-[v0.2.1 release](https://github.com/jarimustonen/orchestratectl/releases/tag/v0.2.1)
+[v0.2.1 release](https://github.com/jarimustonen/taskfleet/releases/tag/v0.2.1)
 exists — so this is a test-harness defect, not a shipped regression.
 
 ## Reopen Notes — 2026-08-17

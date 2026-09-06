@@ -5,7 +5,7 @@ type: improvement
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 related: ['@supervisor-process-review-followup']
 labels: [review-spinoff, supervisor]
 closed: 2026-06-27

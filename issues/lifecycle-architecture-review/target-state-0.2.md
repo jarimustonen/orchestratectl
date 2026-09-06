@@ -69,7 +69,7 @@ explicit assertion is a lookup.
 - **`harness` heavy layer**: `bakeoff` + `conformance` + the `CodeHarness` trait + `aider` +
   `claude-deepseek`. These exist to serve the pipeline's tiered-model execution; they die
   with it. Keep the **light launcher path** (`select`/`pi`/`workmux_agent`, claude+pi). pi.dev
-  serves the multi-*model* need, so orchestratectl needs no multi-model *execution* layer.
+  serves the multi-*model* need, so taskfleet needs no multi-model *execution* layer.
 - **Mid-run discussion / spinoff-proposal machinery** — the `discussion.opened/resolved` +
   `spinoff.proposed/approved/rejected` events, `discussions/`+`spinoffs/` projections,
   `open_discussions`/`pending_spinoffs` counters, and `discussion`/`spinoff` CLI subcommands

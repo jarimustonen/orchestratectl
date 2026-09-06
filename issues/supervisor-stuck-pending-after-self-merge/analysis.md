@@ -1,6 +1,6 @@
 Spinoff supervisor stays alive at `status: pending` and never runs teardown even though the agent self-merged its branch successfully. The run's `events.jsonl` stops at `supervisor.started` — no `node.report`, no merge event, no status transition is ever recorded — so the supervisor polls an empty inbox forever, the tmux window + supervisor process leak, and `run show`/`run wait`/`run list` report a false `pending`.
 
-## Observed (deutschpad, orchestratectl 0.1.0, commit 64b077d)
+## Observed (deutschpad, taskfleet 0.1.0, commit 64b077d)
 
 A batch of **9 `--kind spinoff --headless` runs** was spawned off `main`. **All 9 self-merged successfully** (verified from git: each branch's commits + merge commit are in `main`; `git branch -d` on each succeeded = merged). But only **4 tore down cleanly**; **5 got stuck**:
 
@@ -12,7 +12,7 @@ Same batch, same spawn command, same merge path → **intermittent race** in the
 
 ## Evidence (identical across all 5 stuck runs)
 
-`~/.orchestratectl/runs/01kxj8gzvs…/events.jsonl` — only 3 events, last is `supervisor.started`:
+`~/.taskfleet/runs/01kxj8gzvs…/events.jsonl` — only 3 events, last is `supervisor.started`:
 ```
 seq 1 run.created
 seq 2 node.created  (agent_pid 63757, branch wt/01kxj8gzvs-p24-design, tmux @11)
@@ -23,7 +23,7 @@ No `node.report`, no merge/teardown event, ever.
 `nodes/n-0001.json`: `"status": "pending"`, `"last_report": null`.
 `manifest.json`: `"status": "pending"`, `updated_at` = 5s after creation (never advanced).
 `supervisor.state.json`: `"last_seq_own": 3` (processed nothing after its own start), `updated_at` recent (still polling).
-Process: `ps -p 63840` → alive, ELAPSED 21:41:26, `orchestratectl supervise 01kxj8gzvs…`.
+Process: `ps -p 63840` → alive, ELAPSED 21:41:26, `taskfleet supervise 01kxj8gzvs…`.
 
 **Git ground truth (contradicts the run status):** merge commit `af0ebcb "merge: P2.4 auto-gen-mastery-gating reconciliation design (spinoff)"` is in `main`; the work landed. The agent completed and merged; the supervisor just never learned about it.
 
@@ -56,4 +56,4 @@ Spawn a high-fan-out batch (≈9) of `--kind spinoff --headless` runs off the sa
 
 ## Diagnostic: `run cancel` DOES tear down
 
-`orchestratectl run cancel <id>` on each stuck run succeeded ("1 node(s) cancelled, 0 already terminal") and **properly tore down** — the 5 supervisor processes exited and all 5 tmux windows (and the now-empty `headless` session) were removed. So the teardown machinery works when a terminal event is written; the defect is localized to the **agent self-merge terminal path failing to emit/flush the `node.report`**, not to teardown itself. A fix that guarantees the self-merge emits the same terminal event `cancel` does would resolve it.
+`taskfleet run cancel <id>` on each stuck run succeeded ("1 node(s) cancelled, 0 already terminal") and **properly tore down** — the 5 supervisor processes exited and all 5 tmux windows (and the now-empty `headless` session) were removed. So the teardown machinery works when a terminal event is written; the defect is localized to the **agent self-merge terminal path failing to emit/flush the `node.report`**, not to teardown itself. A fix that guarantees the self-merge emits the same terminal event `cancel` does would resolve it.

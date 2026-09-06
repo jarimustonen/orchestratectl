@@ -11,7 +11,7 @@ closed_by: adr-decision-2
 
 # e2e test: idle-unmerged synthesized report preserves branch+worktree through cleanup
 
-_Source: crates/octl-cli/tests/e2e_spinoff.rs_
+_Source: crates/taskfleet-cli/tests/e2e_spinoff.rs_
 
 ## Description
 

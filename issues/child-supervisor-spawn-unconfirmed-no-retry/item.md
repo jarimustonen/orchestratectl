@@ -12,7 +12,7 @@ closed: 2026-07-26
 
 ## Description
 
-`spawn_child_supervisor` (crates/octl-cli/src/supervise/mod.rs) treats a successful
+`spawn_child_supervisor` (crates/taskfleet-cli/src/supervise/mod.rs) treats a successful
 double-fork as a successful child-supervisor start: it does a single non-blocking
 `read_live_recorded_pid(...).unwrap_or(0)` and the caller inserts the child into
 `state.spawned_children` even when the pid is 0. A later tick skips re-spawning

@@ -11,7 +11,7 @@ epic: lifecycle-architecture-review
 
 ## Description
 
-`shell_single_quote` (single-quote shell escaping for copy-paste-safe run ids in resume hints) is duplicated verbatim in `crates/octl-cli/src/run/false_failed.rs` and `crates/octl-cli/src/run/attention.rs`. The two copies can drift.
+`shell_single_quote` (single-quote shell escaping for copy-paste-safe run ids in resume hints) is duplicated verbatim in `crates/taskfleet-cli/src/run/false_failed.rs` and `crates/taskfleet-cli/src/run/attention.rs`. The two copies can drift.
 
 Surfaced by llm-review (anthropic #10) during the `raw-git-selfmerge-false-failed` review.
 

@@ -16,4 +16,4 @@ closed: 2026-08-16
 
 ## Description
 
-Follow-up to run-create-harness-flag, which introduced the first config-file layer (~/.orchestratectl/config.toml, [harness] section) but no inspection surface. AGENTS-AI-FIRST-CLI §8 wants: 'config path' (print the config file location) and 'config show --json' (print the effective resolved config with per-key source: flag|env|file|default, secrets redacted). Add the 'config' noun with these verbs. Reuse harness::select::HarnessSource for the harness key's source. Needs its own clap surface + insta snapshot suite.
+Follow-up to run-create-harness-flag, which introduced the first config-file layer (~/.taskfleet/config.toml, [harness] section) but no inspection surface. AGENTS-AI-FIRST-CLI §8 wants: 'config path' (print the config file location) and 'config show --json' (print the effective resolved config with per-key source: flag|env|file|default, secrets redacted). Add the 'config' noun with these verbs. Reuse harness::select::HarnessSource for the harness key's source. Needs its own clap surface + insta snapshot suite.

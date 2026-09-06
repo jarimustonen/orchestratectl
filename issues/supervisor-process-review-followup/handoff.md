@@ -45,7 +45,7 @@ agents that die *without* a report.** I did **not** touch the code or the spec h
 
 The code hashes `child_run_id : child_node_id : report_seq : item_kind : item_index`.
 The §7.3 example text hashes `… : report_seq : i` — no `item_kind`. So a tool that
-computes IDs from the literal §7.3 formula would get *different* IDs than orchestratectl.
+computes IDs from the literal §7.3 formula would get *different* IDs than taskfleet.
 
 There's no real collision risk either way (the `d-`/`s-` prefix and separate
 `discussions/` vs `spinoffs/` dirs already keep the namespaces apart), so `item_kind` is

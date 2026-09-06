@@ -7,19 +7,19 @@ priority: normal
 closed: 2026-06-28
 ---
 
-# CI gate: validate every orchestratectl invocation in SKILLs against the binary
+# CI gate: validate every taskfleet invocation in SKILLs against the binary
 
 ## Description
 
-Feature: add a CI / pre-commit gate that catches skill ↔ binary drift before it ships. Run every `orchestratectl ...` invocation in every bundled SKILL.template.md against the binary (at minimum `--help`-level, ideally `--dry-run`) and fail the build if any flag/kind/positional is unknown.
+Feature: add a CI / pre-commit gate that catches skill ↔ binary drift before it ships. Run every `taskfleet ...` invocation in every bundled SKILL.template.md against the binary (at minimum `--help`-level, ideally `--dry-run`) and fail the build if any flag/kind/positional is unknown.
 
 Why: agents trust SKILLs because the version-check says "same version, proceed normally". When the SKILL drifts from the binary (as documented in issue `skill-binary-doc-sync`), the agent hits `unknown_subcommand_or_flag` mid-workflow and has no escape — the SKILL is supposed to be the operating manual. A CI gate that mechanically validates every example would have caught the drift items #1, #3, #4, #5, #6 reported by the deutschpad-v2 agent on 2026-06-28.
 
 Implementation sketch:
 
-1. New test target: `crates/octl-cli/tests/skill_examples.rs`.
-2. For each SKILL.template.md in `crates/octl-cli/skills/<name>/`:
-   - Extract every fenced code block tagged ``` or no-tag that contains an `orchestratectl ` line at column 0 (heuristic — refine as needed).
+1. New test target: `crates/taskfleet-cli/tests/skill_examples.rs`.
+2. For each SKILL.template.md in `crates/taskfleet-cli/skills/<name>/`:
+   - Extract every fenced code block tagged ``` or no-tag that contains an `taskfleet ` line at column 0 (heuristic — refine as needed).
    - Parse the command into argv. Substitute `<run-id>`, `<node-id>`, `<branch>` etc. placeholder values with valid synthetic ones (a fixture).
    - Run with `--dry-run` if the subcommand supports it; otherwise run with `--help` and assert the flags exist in the help output.
    - Fail the test if any invocation returns `unknown_subcommand_or_flag`, `invalid_value`, or any other shape-of-CLI error.

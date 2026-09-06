@@ -4,7 +4,7 @@ updated: 2026-08-10
 type: improvement
 status: done
 priority: normal
-related: ['@vendor-workmux-multiplexer', '@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
+related: ['@vendor-workmux-multiplexer', '@taskfleet-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
 commits:
 - hash: '1538680'
   summary: vendor typed git-worktree wrapper; cleanup.rs routes git through git::repo::Git
@@ -25,12 +25,12 @@ has actually landed:
 
 - **Multiplexer slice — DONE (subsumed).** raine declined the upstream crate split
   (2026-07-13) and suggested vendoring instead; the tmux slice was vendored under
-  `crates/octl-cli/src/multiplexer/` (`kill_window` / `kill_session` /
+  `crates/taskfleet-cli/src/multiplexer/` (`kill_window` / `kill_session` /
   `new_session(headless)` / `find_window_by_path`) and the supervisor's tmux-cleanup
   path now makes typed `Tmux` calls instead of shelling out. Tracked and closed by
   `@vendor-workmux-multiplexer` (done 2026-07-31, commit `20ec690`). Nothing remains
   here for the multiplexer.
-- **Sandbox slice — DROPPED.** No orchestratectl worktree kind uses sandboxing and
+- **Sandbox slice — DROPPED.** No taskfleet worktree kind uses sandboxing and
   there is no concrete driver; the original "useful for some worktree kinds" line was
   speculative. Out of scope — refile if a real need appears.
 - **Git-worktree slice — REMAINING (this issue, narrowed below).**
@@ -38,9 +38,9 @@ has actually landed:
 ## Remaining slice — typed git-worktree wrapper
 
 Spawn still shells out through `~/.claude/skills/worktree/scripts/create.sh`
-(`crates/octl-cli/src/run/spawn.rs`), which itself calls `workmux add`, and the
+(`crates/taskfleet-cli/src/run/spawn.rs`), which itself calls `workmux add`, and the
 supervisor cleanup + merge paths issue ~40 raw `git` subprocesses
-(`crates/octl-cli/src/supervise/cleanup.rs`, `run/merge.rs`) — `git worktree remove`,
+(`crates/taskfleet-cli/src/supervise/cleanup.rs`, `run/merge.rs`) — `git worktree remove`,
 `git branch -d/-D`, `git rev-list --count`, ancestry checks, etc. There is no typed
 git wrapper; git logic is scattered as `Command::new(git)` call sites.
 
@@ -59,7 +59,7 @@ enum is `normal|high`, so it stays `normal`, but treat it as backlog cleanup deb
 
 ### Crisp done-definition (IF pursued)
 
-1. A vendored `crates/octl-cli/src/git/` module (fork-and-own, same provenance +
+1. A vendored `crates/taskfleet-cli/src/git/` module (fork-and-own, same provenance +
    attribution discipline as `multiplexer/`) exposing the worktree/branch operations
    the supervisor and merge path actually use — `worktree_remove`, `branch_delete`
    (with the `-d` vs `-D` unmerged-safety distinction preserved), `rev_list_count` /

@@ -18,7 +18,7 @@ closed: 2026-07-03
 
 **Reporter:** homebase worktree `wt/01kwj3494b-bridge-issue-comment` session
 **Reported:** 2026-07-03
-**Version:** orchestratectl `0.0.2-alpha` (commit `65a21007f787e3a986f455cdcaf5165272c9cd66`)
+**Version:** taskfleet `0.0.2-alpha` (commit `65a21007f787e3a986f455cdcaf5165272c9cd66`)
 **Severity:** Medium — no data loss (the merge lands correctly on `main`),
 but the worktree + tmux window + branch are silently left behind and the
 success envelope misleads the caller into telling the user cleanup
@@ -26,7 +26,7 @@ happened.
 
 ## Summary
 
-`orchestratectl run merge` performed the rebase+merge and wrote the
+`taskfleet run merge` performed the rebase+merge and wrote the
 terminal `node.report`, then returned `{"merged": true, "report_seq": 5}`.
 But the run's per-run **supervisor process had already been killed by
 SIGTERM ~1h11m earlier**, so nothing consumed the terminal report.
@@ -76,7 +76,7 @@ window… within a second or two") silently does not hold.
   either (a) perform teardown inline / auto-`reattach`, or
   (b) return `merged: true` **with a warning** in the envelope
   (e.g. `warnings: ["supervisor not running; teardown deferred — run
-  \`orchestratectl run reattach <id>\`"]`) so the caller can recover
+  \`taskfleet run reattach <id>\`"]`) so the caller can recover
   instead of reporting a clean close.
 - At minimum, surface `supervisor_alive: false` in the `run merge`
   envelope.
@@ -99,7 +99,7 @@ invokes it, and `run show` gives no hint the supervisor is dead
 
 ## Workaround used
 
-Hold off on teardown; run `orchestratectl run reattach
+Hold off on teardown; run `taskfleet run reattach
 01kwj3494bvaskz6y1x7482mjn` to restart the supervisor — it then
 consumes seq 5 and performs the deferred teardown correctly.
 
@@ -112,7 +112,7 @@ consumes seq 5 and performs the deferred teardown correctly.
   acceptable.
 - `run show` / `run list` surface supervisor liveness (`supervisor: {pid,
   alive}`) so a caller can distinguish "still working" from "orphaned".
-- Integration test in `crates/octl-cli/tests/` (extending
+- Integration test in `crates/taskfleet-cli/tests/` (extending
   `e2e_spinoff.rs` or a new file) that kills the supervisor mid-run,
   then invokes `run merge`, and asserts the envelope carries the
   warning / performs recovery — no silent success.

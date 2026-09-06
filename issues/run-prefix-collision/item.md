@@ -22,7 +22,7 @@ Two runs created concurrently can share the documented first 10 run-ID character
 The bundled worktree merge/discovery recipe derives `short` from that branch prefix and runs:
 
 ```sh
-ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}"
+ls -1 ~/.taskfleet/runs/ | grep -m1 "^${short}"
 ```
 
 That selected the unrelated run. The worker avoided merging/reporting against the wrong run only by using exact node/branch lookup.

@@ -42,7 +42,7 @@ This is the explicit human checkpoint in the sequence:
 - Can fallback ever cross from a telemetry-capable autonomous candidate to one without telemetry? Default answer should fail closed.
 - How do capability, data residency, interactivity, and telemetry support remain orthogonal and machine-checkable?
 - How does `run create`, effective config inspection, run metadata, and `run show` explain the selected policy and its source?
-- Which state belongs to the pi adapter, the harness-neutral orchestratectl protocol, and the end-to-end stint lifecycle?
+- Which state belongs to the pi adapter, the harness-neutral taskfleet protocol, and the end-to-end stint lifecycle?
 - What is the smallest implementation sequence that proves the boundary before expanding configuration or UI?
 
 ## Deliverable

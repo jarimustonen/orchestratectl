@@ -13,9 +13,9 @@ closed_by: claude
 
 ## Description
 
-Observed during a /stint round (kunnollavauhtiin-monorepo, orchestratectl 0.1.0). Two 'orchestratectl run create --kind spinoff --headless ... --output jsonl' calls were issued back-to-back in one shell (create A; echo ===; create B).
+Observed during a /stint round (kunnollavauhtiin-monorepo, taskfleet 0.1.0). Two 'taskfleet run create --kind spinoff --headless ... --output jsonl' calls were issued back-to-back in one shell (create A; echo ===; create B).
 
-Observed: create A printed its success envelope (supervisor pid set, alive). create B's envelope was NEVER printed to stdout, yet the run WAS created — it appeared in 'run list' with status pending, node_count 0, and supervisor {pid: null, alive: false}. 'run show B' confirmed no supervisor and no worker node. 'orchestratectl run reattach B' spawned the supervisor (new pid) and the worker node appeared; the run then proceeded normally to done+merged.
+Observed: create A printed its success envelope (supervisor pid set, alive). create B's envelope was NEVER printed to stdout, yet the run WAS created — it appeared in 'run list' with status pending, node_count 0, and supervisor {pid: null, alive: false}. 'run show B' confirmed no supervisor and no worker node. 'taskfleet run reattach B' spawned the supervisor (new pid) and the worker node appeared; the run then proceeded normally to done+merged.
 
 Expected: either 'run create' fully spawns the supervisor before returning (and prints its envelope), or it fails loudly. A silently supervisor-less pending run is confusing — it looks stuck and only 'run reattach' (non-obvious) recovers it.
 
@@ -48,18 +48,18 @@ deterministically rather than looking silently stuck):
 Left OPEN: no reproducible code race was isolated, so there is nothing more to fix here
 without a live repro. If it recurs, capture whether the two `run create` processes were
 backgrounded in one shell (`create A & create B &`) vs. run sequentially — the former is
-the suspected cause and is a shell-usage issue, not an octl race.
+the suspected cause and is a shell-usage issue, not an taskfleet race.
 
 ### 2026-07-28T08:57:27Z · @jari
 
-Confirmed again 2026-07-28 (3dbear-monorepo /stint, orchestratectl 0.1.0). Three back-to-back 'run create --kind spinoff --headless' in a single Bash loop: only the FIRST printed its envelope before the shell 2-minute timeout fired (Exit 143). The second appeared in run list as pending, node_count 0, supervisor pid null — same supervisor-less zombie. Cancelled with 'run cancel' (clean, worktree_root null so no git state), re-spawned individually with explicit 240s timeout — worked every time. Reliable workaround: one 'run create' per Bash call (not a loop), each with its own generous timeout.
+Confirmed again 2026-07-28 (3dbear-monorepo /stint, taskfleet 0.1.0). Three back-to-back 'run create --kind spinoff --headless' in a single Bash loop: only the FIRST printed its envelope before the shell 2-minute timeout fired (Exit 143). The second appeared in run list as pending, node_count 0, supervisor pid null — same supervisor-less zombie. Cancelled with 'run cancel' (clean, worktree_root null so no git state), re-spawned individually with explicit 240s timeout — worked every time. Reliable workaround: one 'run create' per Bash call (not a loop), each with its own generous timeout.
 
 ### 2026-08-05T00:00:00Z · @jari
 
-New datapoint that widens the trigger beyond "back-to-back in one shell" (3dbear-monorepo, orchestratectl 0.1.0). A **single, first** `run create --kind spinoff` (no loop, no other create in the same call, foreground) hit the Bash 2-minute timeout (Exit 143) mid-setup and left the exact zombie: `manifest.json` written, `supervisor {pid: null, alive: false}`, `node_count: 0`, events.jsonl containing only `run.created`, and NO `supervisor.stderr.log` at all. So the shared cause is simply "`create.sh` did not finish before the caller was interrupted" — a busy host is enough; concurrency is not required.
+New datapoint that widens the trigger beyond "back-to-back in one shell" (3dbear-monorepo, taskfleet 0.1.0). A **single, first** `run create --kind spinoff` (no loop, no other create in the same call, foreground) hit the Bash 2-minute timeout (Exit 143) mid-setup and left the exact zombie: `manifest.json` written, `supervisor {pid: null, alive: false}`, `node_count: 0`, events.jsonl containing only `run.created`, and NO `supervisor.stderr.log` at all. So the shared cause is simply "`create.sh` did not finish before the caller was interrupted" — a busy host is enough; concurrency is not required.
 
 Two things worth noting against the earlier resolution comment:
-1. The stated guard ("if the supervisor does not confirm, `run create` returns `supervisor_spawn_failed` with the run id instead of a silent supervisor-less pending") did **not** fire here — because the caller process was *killed* by the external timeout before it reached that return path. When `run create` is itself interrupted, nothing on the octl side gets to emit the loud failure. The zombie is indistinguishable from a healthy `pending` except by `supervisor.alive: false` + absent stderr log.
+1. The stated guard ("if the supervisor does not confirm, `run create` returns `supervisor_spawn_failed` with the run id instead of a silent supervisor-less pending") did **not** fire here — because the caller process was *killed* by the external timeout before it reached that return path. When `run create` is itself interrupted, nothing on the taskfleet side gets to emit the loud failure. The zombie is indistinguishable from a healthy `pending` except by `supervisor.alive: false` + absent stderr log.
 2. Recovery via `run cancel` was clean (worktree_root null → no git state to unwind), then re-create with an **idempotency key in a backgrounded Bash call** (so the external timeout can't interrupt it) spawned the supervisor normally within ~80s.
 
 Suggested direction (still no in-process race to fix): make the zombie self-healing or self-evident without operator archaeology — e.g. a `pending` run whose manifest has no supervisor and whose age exceeds the startup timeout could be reaped/failed by the next `run list`/`run show`, or `run create` could fork the supervisor detached and return fast so the caller's own timeout can't straddle the spawn. The current reliable workaround for agents: run `run create` **backgrounded** (not foreground) so a harness/Bash timeout never interrupts setup.

@@ -11,7 +11,7 @@ closed: 2026-06-29
 
 ## Description
 
-When `orchestratectl run merge` hits a rebase conflict, it exits `merge_failed`
+When `taskfleet run merge` hits a rebase conflict, it exits `merge_failed`
 and submits **no** terminal report — the node stays live and the supervisor
 keeps polling. The user then resolves the conflict by hand (`git rebase
 --continue` / `/complex-rebase`) and re-runs `run merge`. On that successful
@@ -25,7 +25,7 @@ path defeats **both** while nothing records the miss.
 
 1. **merge.sh's own detached cleanup** keys off `$TMUX_PANE` — the pane the
    command was executed *from* — captured at runtime
-   (`crates/octl-cli/scripts/merge.sh`, the `tmux display-message -t "$TMUX_PANE"
+   (`crates/taskfleet-cli/scripts/merge.sh`, the `tmux display-message -t "$TMUX_PANE"
    -p '#{window_id}'` line). In the normal autonomous flow the agent runs
    `run merge` inside its own spawned window, so this resolves to that window.
    But when a human resolves the conflict and re-runs the merge, the retry is
@@ -33,7 +33,7 @@ path defeats **both** while nothing records the miss.
    merge.sh either kills the wrong window or captures the wrong id — the spinoff
    window survives.
 
-2. **The supervisor's cleanup** (`crates/octl-cli/src/supervise/cleanup.rs`,
+2. **The supervisor's cleanup** (`crates/taskfleet-cli/src/supervise/cleanup.rs`,
    `cleanup_terminal_nodes` → `cleanup_node` → `kill_tmux_window`) targets the
    window by the spawn-time `tmux_identity` (the stable `@NNNN` window id) when
    present, and otherwise by the legacy bare window **name**
@@ -52,7 +52,7 @@ spinoff window, and the silent swallow made every recurrence invisible.
 
 ## Fix
 
-`crates/octl-cli/src/supervise/cleanup.rs` (`close_tmux_window`):
+`crates/taskfleet-cli/src/supervise/cleanup.rs` (`close_tmux_window`):
 
 - The recorded-target kill is still attempted unconditionally first (we never
   precheck with `list-windows` — a transient empty list must not skip a real
@@ -69,14 +69,14 @@ spinoff window, and the silent swallow made every recurrence invisible.
   method, worktree path) under an idempotency key, then continue. Cleanup never
   fails the run — but the orphan is now visible in the run log instead of silent.
 
-`crates/octl-core/src/reducer.rs` lists `cleanup.window_missing` explicitly as an
+`crates/taskfleet-core/src/reducer.rs` lists `cleanup.window_missing` explicitly as an
 append-only audit record that folds to a clean no-op (it mutates no projection;
 the event log is its only home), alongside `orchestrator.decision` /
 `discuss.critical`.
 
 ## Tests
 
-- `crates/octl-cli/src/supervise/cleanup.rs`:
+- `crates/taskfleet-cli/src/supervise/cleanup.rs`:
   - `window_killed_by_id_no_fallback` — happy path issues no probe / no event.
   - `missing_window_records_event_and_does_not_fail` — the "window already gone"
     path records exactly one `cleanup.window_missing` and does not panic/fail.
@@ -84,7 +84,7 @@ the event log is its only home), alongside `orchestrator.decision` /
     by worktree path and killed, with no audit event.
   - `missing_window_event_is_idempotent` — a second cleanup pass appends no
     duplicate (idempotency key).
-- `crates/octl-cli/tests/supervise_gates.rs::missing_window_records_event_without_failing_run`
+- `crates/taskfleet-cli/tests/supervise_gates.rs::missing_window_records_event_without_failing_run`
   — end-to-end through `supervise --once`: an orphaned window records the event
   yet the run still rolls up to `done`.
 

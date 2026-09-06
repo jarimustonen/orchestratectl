@@ -12,7 +12,7 @@ priority: normal
 
 ## Observed
 
-`orchestratectl run wait` returns a JSON envelope that gives a caller no direct way to tell
+`taskfleet run wait` returns a JSON envelope that gives a caller no direct way to tell
 whether it settled because every run reached a terminal state, or because `--timeout` (or the
 6-hour default) elapsed first.
 
@@ -64,7 +64,7 @@ re-deriving the terminal set.
 
 ## Environment
 
-orchestratectl 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS.
+taskfleet 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS.
 
 ## Close condition
 

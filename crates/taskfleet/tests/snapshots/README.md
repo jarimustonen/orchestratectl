@@ -29,7 +29,7 @@ refused-but-actionable (exit 2) path. The other nouns' refusals (unknown
 id, empty/oversize value, unknown kind) are validation errors (exit 1) and
 are covered as such; they have no distinct exit-2 path.
 
-**POSIX-only.** orchestratectl is a unix tool (`libc::kill`, tmux, git
+**POSIX-only.** taskfleet is a unix tool (`libc::kill`, tmux, git
 worktrees), and so is this suite: the `[HOME]` path redaction and the
 `run reattach` PID trick assume POSIX paths and `kill(pid, 0)` semantics.
 It is not expected to pass on Windows.
@@ -56,7 +56,7 @@ pattern. All global patterns are boundary- and case-anchored.
 | Token | Redacted to | How |
 | --- | --- | --- |
 | `run_id` (ULID) | `[RUN_ID]` | per-test dynamic filter (also rewrites the copy inside `dir` paths and error messages) |
-| `$ORCHESTRATECTL_HOME` temp dir | `[HOME]` | per-test dynamic filter |
+| `$TASKFLEET_HOME` temp dir | `[HOME]` | per-test dynamic filter |
 | any other ULID-shaped token (e.g. a future `event_id`) | `[ULID]` | global fallback filter |
 | git HEAD hash | `[COMMIT]` | global filter (`\b[0-9a-f]{40}\b`) |
 | timestamps (`created_at`, `ts`, …) | `[TS]` | global filter, covers RFC3339 `Z`, `+00:00`, and `… UTC` forms |

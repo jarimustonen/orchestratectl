@@ -21,7 +21,7 @@ From /llm-review of A6. supervise::outcome::is_supervisor_failure classifies Blo
 
 ## Acceptance Criteria
 
-- [x] A typed `ReportOrigin` (`Agent | Supervisor | RunMerge{op_id, worker_oid}`) is persisted on `node.report` payloads under an `origin` key (`octl_core::report`).
+- [x] A typed `ReportOrigin` (`Agent | Supervisor | RunMerge{op_id, worker_oid}`) is persisted on `node.report` payloads under an `origin` key (`taskfleet_core::report`).
 - [x] `run merge` / its crash recovery stamp `RunMerge` (sole merge authority); the supervisor stamps `Supervisor` on every synthesized failure; `node report` normalizes any caller-supplied origin to `Agent`.
 - [x] `supervise::outcome::classify` / `is_supervisor_failure` read the typed origin, with the legacy `via`/`reason` sniff gated on the origin field being genuinely ABSENT (a malformed origin never re-unlocks the legacy path).
 - [x] Legacy on-disk reports (no origin field) decode read-only and classify exactly as before.

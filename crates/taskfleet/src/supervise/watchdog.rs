@@ -727,15 +727,15 @@ mod tests {
 
         // window_id matching (qualified path), split on the FIRST `|`.
         assert_eq!(
-            snap.lookup_qualified(&id(None, "octl", "@42")),
+            snap.lookup_qualified(&id(None, "taskfleet", "@42")),
             TmuxProbe::Present
         );
         assert_eq!(
-            snap.lookup_qualified(&id(None, "octl", "@99")),
+            snap.lookup_qualified(&id(None, "taskfleet", "@99")),
             TmuxProbe::Present
         );
         assert_eq!(
-            snap.lookup_qualified(&id(None, "octl", "@1")),
+            snap.lookup_qualified(&id(None, "taskfleet", "@1")),
             TmuxProbe::Absent
         );
         // window_name matching (legacy path): the name keeps everything after
@@ -762,7 +762,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|win"], 0));
         let snap = snapshot(&[Some("/tmp/sock")]);
         assert_eq!(
-            snap.lookup_qualified(&id(Some("/tmp/sock"), "octl", "@42")),
+            snap.lookup_qualified(&id(Some("/tmp/sock"), "taskfleet", "@42")),
             TmuxProbe::Present
         );
         // The probe targeted the recorded socket via `-S <socket>`.
@@ -782,7 +782,7 @@ mod tests {
         let snap = snapshot(&[None]);
         // @42 is genuinely absent on a server that answered → definitive Absent.
         assert_eq!(
-            snap.lookup_qualified(&id(None, "octl", "@42")),
+            snap.lookup_qualified(&id(None, "taskfleet", "@42")),
             TmuxProbe::Absent
         );
         assert!(
@@ -800,7 +800,7 @@ mod tests {
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server running"], 1));
         let snap = snapshot(&[Some("/tmp/dead-sock")]);
         assert_eq!(
-            snap.lookup_qualified(&id(Some("/tmp/dead-sock"), "octl", "@42")),
+            snap.lookup_qualified(&id(Some("/tmp/dead-sock"), "taskfleet", "@42")),
             TmuxProbe::Unknown
         );
     }
@@ -816,7 +816,7 @@ mod tests {
             pid: std::process::id(),
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(Some("/tmp/sock"), "octl", "@42")),
+            tmux_identity: Some(id(Some("/tmp/sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[Some("/tmp/sock")]);
@@ -832,7 +832,7 @@ mod tests {
             pid: std::process::id(),
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(None, "octl", "@42")),
+            tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[None]);
@@ -851,7 +851,7 @@ mod tests {
             pid: std::process::id(),
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(Some("/tmp/dead-sock"), "octl", "@42")),
+            tmux_identity: Some(id(Some("/tmp/dead-sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[Some("/tmp/dead-sock")]);
@@ -904,7 +904,7 @@ mod tests {
                 pid: std::process::id(),
                 start_time: None,
                 tmux_window: None,
-                tmux_identity: Some(id(Some(sock), "octl", &format!("@{n}"))),
+                tmux_identity: Some(id(Some(sock), "taskfleet", &format!("@{n}"))),
                 skip_tmux_check: false,
             };
             assert_eq!(check_liveness(&probe, &snap), Liveness::Alive);
@@ -934,7 +934,7 @@ mod tests {
             Duration::from_millis(150),
         );
         assert_eq!(
-            snap.lookup_qualified(&id(Some("/tmp/wedged"), "octl", "@42")),
+            snap.lookup_qualified(&id(Some("/tmp/wedged"), "taskfleet", "@42")),
             TmuxProbe::Unknown,
             "a timed-out probe must be Unknown, never a false Absent"
         );
@@ -943,7 +943,7 @@ mod tests {
             pid: std::process::id(),
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(Some("/tmp/wedged"), "octl", "@42")),
+            tmux_identity: Some(id(Some("/tmp/wedged"), "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         // Live PID + inconclusive (timed-out) tmux probe → stays Alive.
@@ -970,7 +970,7 @@ mod tests {
             pid: DEAD_PID,
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(None, "octl", "@42")),
+            tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[None]);
@@ -1003,7 +1003,7 @@ mod tests {
             pid: DEAD_PID,
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(None, "octl", "@42")),
+            tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[None]);
@@ -1027,7 +1027,7 @@ mod tests {
             pid: DEAD_PID,
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(Some("/tmp/dead-sock"), "octl", "@42")),
+            tmux_identity: Some(id(Some("/tmp/dead-sock"), "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[Some("/tmp/dead-sock")]);
@@ -1097,7 +1097,7 @@ mod tests {
             pid: std::process::id(),
             start_time: Some(1), // 1970: cannot match a live process → Recycled
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(None, "octl", "@42")),
+            tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[None]);
@@ -1125,7 +1125,7 @@ mod tests {
             pid: std::process::id(),
             start_time: None,
             tmux_window: Some("🚀 wt/x".to_string()),
-            tmux_identity: Some(id(None, "octl", "@42")),
+            tmux_identity: Some(id(None, "taskfleet", "@42")),
             skip_tmux_check: false,
         };
         let snap = snapshot(&[None]);

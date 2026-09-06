@@ -12,24 +12,24 @@ commits:
 closed: 2026-08-17
 ---
 
-# `octl-spawn-spinoff` SKILL.md still carries a "NOT IMPLEMENTED" preview banner — but the surface ships in 0.1.0
+# `taskfleet-spawn-spinoff` SKILL.md still carries a "NOT IMPLEMENTED" preview banner — but the surface ships in 0.1.0
 
 _Source: issuectl stint 2026-08-04 — the spinoff/orchestrate surface was used successfully all session._
 
 ## Observed
 
-`octl-spawn-spinoff`'s `SKILL.md` opens with a prominent blocking banner:
+`taskfleet-spawn-spinoff`'s `SKILL.md` opens with a prominent blocking banner:
 
 > ## ⚠️ PREVIEW — DO NOT INVOKE BLINDLY
-> The `orchestratectl run create --kind spinoff` surface documented here is
+> The `taskfleet run create --kind spinoff` surface documented here is
 > **not yet implemented**. It lands in the `all-kinds-spawn` issue. Until then:
-> 1. Call `orchestratectl --help` and confirm the `run` subcommand is listed…
+> 1. Call `taskfleet --help` and confirm the `run` subcommand is listed…
 > 2. …invoke the `/worktree-spinoff` slash-command skill instead…
 > 3. Otherwise … tell the user the spinoff surface is not yet shipped and stop.
 
-But in the installed **`orchestratectl 0.1.0`** the surface **is** implemented:
+But in the installed **`taskfleet 0.1.0`** the surface **is** implemented:
 
-    $ orchestratectl run create --kind spinoff --headless --title … --task … --source-branch main
+    $ taskfleet run create --kind spinoff --headless --title … --task … --source-branch main
     {"schema_version":1,"data":{"run_id":"…","kind":"spinoff", …}}
 
 `run create --kind` accepts `spinoff`, `orchestrate`, `orchestrated`, `research`,
@@ -40,16 +40,16 @@ But in the installed **`orchestratectl 0.1.0`** the surface **is** implemented:
 
 The stale banner tells an agent to distrust the documented invocation and fall
 back to `/worktree-spinoff`, or to "stop" — friction on the now-shipped happy
-path. The whole point of the skill (drive `orchestratectl` directly) is
+path. The whole point of the skill (drive `taskfleet` directly) is
 undercut by its own warning.
 
 ## Suggested fix
 
 Remove the PREVIEW banner (and the three-step fallback gate) now that
 `run create --kind spinoff` ships in 0.1.0. If a version floor is still wanted,
-replace the banner with a normal "requires orchestratectl ≥ 0.1.0" note rather
+replace the banner with a normal "requires taskfleet ≥ 0.1.0" note rather
 than a "not implemented" stop-gate. Check the sibling skills
-(`orchestratectl-overview`, `octl-run-overview`, the `worktree-*` family) for the
+(`taskfleet-overview`, `taskfleet-run-overview`, the `worktree-*` family) for the
 same stale "not yet implemented" language and the `all-kinds-spawn` reference.
 
 ## Severity

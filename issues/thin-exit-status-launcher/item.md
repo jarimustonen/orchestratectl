@@ -27,7 +27,7 @@ This is part of the 0.2 thin-supervisor build. The supervisor must stop guessing
 - exit 0 with an explicit merge event → success;
 - exit 0 with no merge event → non-terminal attention-required / manual finish path, not auto-failed.
 
-Likely touches `crates/octl-cli/src/supervise/*` and the event/schema/reducer surface needed for the new event.
+Likely touches `crates/taskfleet-cli/src/supervise/*` and the event/schema/reducer surface needed for the new event.
 
 ## Done criteria
 - Worker launch goes through the shim for autonomous runs.

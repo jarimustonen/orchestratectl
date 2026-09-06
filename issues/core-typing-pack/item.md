@@ -5,7 +5,7 @@ type: chore
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 commits:
 - hash: 088d63f

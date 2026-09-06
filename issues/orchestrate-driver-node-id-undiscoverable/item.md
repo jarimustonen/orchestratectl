@@ -11,7 +11,7 @@ priority: normal
 
 ## Description
 
-Symptom: a driver run created via `orchestratectl run create --kind orchestrate ... --output json` returns:
+Symptom: a driver run created via `taskfleet run create --kind orchestrate ... --output json` returns:
 ```json
 {"run_id":"...","dir":"...","supervisor":"orchestrator-in-main-conversation","kind":"orchestrate","lifecycle":"interactive"}
 ```
@@ -21,7 +21,7 @@ Symptom: a driver run created via `orchestratectl run create --kind orchestrate 
 
 And `--parent-node-id` is REQUIRED to spawn a child:
 ```
-orchestratectl run create --kind orchestrated --parent-run-id <driver> --parent-node-id <???> ...
+taskfleet run create --kind orchestrated --parent-run-id <driver> --parent-node-id <???> ...
 ```
 
 So the orchestrator has no documented or derivable way to know what value to pass. The agent that hit this in deutschpad-v2 (2026-06-28) had to guess `n-0001` — which worked, but only by coincidence (it's what the first node would be IF one existed).
@@ -40,7 +40,7 @@ So the SKILL explicitly tells the agent to pass a value that is BOTH undocumente
 Fix direction:
 1. Create a `n-0001` "driver node" automatically inside `run create --kind orchestrate`, return it in the success envelope as `node_id`, and ensure `run show`/`node list` see it. This makes `n-0001` the documented, programmatically-discoverable id.
 2. Update SKILL examples: replace every `n-driver-001` with `n-0001`. Add a sentence to /orchestrate §2: "Capture `node_id` from the envelope — it will be `n-0001` for a fresh driver run."
-3. Document the node-id format (`n-` + 4-10 ASCII digits) in `orchestratectl-overview` so agents stop inventing arbitrary slugs.
+3. Document the node-id format (`n-` + 4-10 ASCII digits) in `taskfleet-overview` so agents stop inventing arbitrary slugs.
 
 Acceptance:
 - After `run create --kind orchestrate`, success envelope contains `node_id: "n-0001"`.
@@ -56,7 +56,7 @@ Severity: BLOCKING for /orchestrate (child-spawn is unreachable without it).
 it emits a `node.created` event for `n-0001` before the materialize
 short-circuit, so the node lands on disk with no tmux/branch/pid metadata
 (it is the DAG root, not a worker). Implemented in
-`crates/octl-cli/src/run/create.rs` — the envelope now carries
+`crates/taskfleet-cli/src/run/create.rs` — the envelope now carries
 `node_id` from an explicit `EmitInput.node_id` field rather than deriving
 it from spawn presence.
 
@@ -73,5 +73,5 @@ Docs/skills:
   `worktree-spinoff` and `worktree-orchestrated` SKILLs;
 - `/orchestrate` §2 now says the driver node is `n-0001` but to read it
   from the envelope rather than hard-code it;
-- `orchestratectl-overview` documents the node-id format (`n-` + 4–10
+- `taskfleet-overview` documents the node-id format (`n-` + 4–10
   ASCII digits) and warns against inventing slugs.

@@ -57,7 +57,7 @@ governed schema-evolution process (design §13) when the pipeline matures:
 - **Artifact-ref indirection** — `transcript_ref: Option<PathBuf>` is host-local
   and temp-dir-ephemeral; a remote adapter needs a durable `{uri, sha256,
   size}` artifact reference, and the supervisor needs an ownership/cleanup
-  contract for the `/tmp/octl-harness/...` tree.
+  contract for the `/tmp/taskfleet-harness/...` tree.
 - **Check-env scrubbing + secret redaction** — checks run via `sh -c` inherit
   the full environment (incl. the provider key) and transcripts may echo
   secrets to `/tmp`. Scrub the check env; redact known-secret patterns before
@@ -70,7 +70,7 @@ governed schema-evolution process (design §13) when the pipeline matures:
 
 ## Context
 
-- Contract lives at `crates/octl-cli/src/harness/` (T0).
+- Contract lives at `crates/taskfleet-cli/src/harness/` (T0).
 - `issues/code-pipeline/design.md` §9 (circuit-breakers), §10 (harness contract).
 - Blocks: breakdown **T5** (staged supervisor) / **T6** (circuit-breakers) /
   **T11** (rollout wiring) — must land before auto-merge is enabled.

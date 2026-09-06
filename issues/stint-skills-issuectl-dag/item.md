@@ -20,14 +20,14 @@ The bundled `stint-start` and `stint-handoff` skills still require and parse `AG
 
 - Make `issuectl dag --json` the sole scheduling source in `stint-start` and `stint-handoff`. Read lane order, dependency state, collision tokens, computed heads, and spawnability from its JSON rather than from `TODO.md`.
 - At launch, pass current live run holds to `issuectl dag --reservations` so spawnability accounts for in-flight lane and collision reservations.
-- Delete `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` and remove the installation/runtime dependency on it.
+- Delete `crates/taskfleet-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` and remove the installation/runtime dependency on it.
 - Remove all instructions to create, merge, parse, validate, or commit a markdown `## Execution DAG` block. `TODO.md` remains only a handoff narrative.
 - Preserve generic operating-policy and safety guidance where it remains useful, but move it into the relevant skill templates or a newly named generic reference if shared prose is genuinely needed. Do not retain the retired DAG notation.
 - Update bundled-skill install/doctor snapshots and tests.
 
 ## Acceptance criteria
 
-A fresh `orchestratectl skill install` no longer installs `AGENTS-EXECUTION-DAG.md`; neither stint skill mentions TODO markdown DAG delimiters, `comm -3`, `GLOBAL HEAD-OF-LINE`, or prose `collision:` tags; and the documented scheduling flow works solely through `issuectl dag --json` plus optional reservations.
+A fresh `taskfleet skill install` no longer installs `AGENTS-EXECUTION-DAG.md`; neither stint skill mentions TODO markdown DAG delimiters, `comm -3`, `GLOBAL HEAD-OF-LINE`, or prose `collision:` tags; and the documented scheduling flow works solely through `issuectl dag --json` plus optional reservations.
 
 ## Context
 

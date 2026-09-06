@@ -4,11 +4,11 @@ updated: 2026-06-27
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 ---
 
-# octl-core: validate IDs / typed ID newtypes
+# taskfleet-core: validate IDs / typed ID newtypes
 
 ## Description
 

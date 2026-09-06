@@ -15,7 +15,6 @@ jq -e '
 jq -e '
   .activation == "ready" and
   .source_repository.current == "jarimustonen/taskfleet" and
-  .source_repository.after_r9 == "jarimustonen/taskfleet" and
   .cargo_dist.trigger == "tag-push" and
   .cargo_dist.pr_run_mode == "skip" and
   .cargo_dist.authorization == "wrapper-ref-exact-tag-main-green-ci" and
@@ -53,10 +52,9 @@ grep -A12 '^on:' .github/workflows/release.yml |
   exit 2
 }
 cargo metadata --locked --no-deps --format-version=1 | jq -e '
-  [.packages[] | select(.name == "taskfleet-core" or .name == "taskfleet" or
-    .name == "orchestratectl") |
+  [.packages[] | select(.name == "taskfleet-core" or .name == "taskfleet") |
     (.repository == "https://github.com/jarimustonen/taskfleet" and
-     .homepage == "https://github.com/jarimustonen/taskfleet")] | length == 3 and all
+     .homepage == "https://github.com/jarimustonen/taskfleet")] | length == 2 and all
 ' >/dev/null || {
   echo "release activation requires canonical Cargo repository/homepage metadata" >&2
   exit 2

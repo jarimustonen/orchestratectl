@@ -9,25 +9,25 @@ to a terminal status, and its worktree + tmux window are never torn down.**
 
 The supervisor — not `run merge`, not `run cancel` — is the canonical actor
 that rolls a run up to a terminal `run.status` and tears down its worktree
-(state-integrity invariant 5; `crates/octl-cli/src/supervise/cleanup.rs`
+(state-integrity invariant 5; `crates/taskfleet-cli/src/supervise/cleanup.rs`
 `rollup_status` + `cleanup_terminal_nodes`). A child run delegates supervisor
 creation to its parent's supervisor (single-arbiter, design §7.2):
 
-- `crates/octl-cli/src/run/create.rs:544-548` — for a child spawn
+- `crates/taskfleet-cli/src/run/create.rs:544-548` — for a child spawn
   (`is_child`), `run create` deliberately does **not** spawn a supervisor;
   the parent supervisor sees `child.spawned` and forks the child supervisor.
-- `crates/octl-cli/src/supervise/mod.rs:325-415` — that adoption only happens
+- `crates/taskfleet-cli/src/supervise/mod.rs:325-415` — that adoption only happens
   inside a running parent supervisor's own-run tail loop.
 
 But the orchestrate **driver** never gets a supervisor:
 
-- `crates/octl-cli/src/run/create.rs:182-184` force-skips materialization for
+- `crates/taskfleet-cli/src/run/create.rs:182-184` force-skips materialization for
   `Kind::Orchestrate` (the orchestrator agent runs in the user's main
   conversation; there is no worktree to boot).
-- `crates/octl-cli/src/run/create.rs:414-442` — the `skip_materialize`
+- `crates/taskfleet-cli/src/run/create.rs:414-442` — the `skip_materialize`
   short-circuit returns early with `supervisor_pid: None`. The non-skip
   supervisor-spawn at `create.rs:544-548` is never reached.
-- `crates/octl-cli/src/run/create.rs:736-738` then labels the envelope's
+- `crates/taskfleet-cli/src/run/create.rs:736-738` then labels the envelope's
   `supervisor` field `"orchestrator-in-main-conversation"`.
 
 Net effect for every orchestrated child of that driver:
@@ -37,7 +37,7 @@ Net effect for every orchestrated child of that driver:
    `child.spawned` on the **driver's** log.
 2. Nothing is tailing the driver's log — there is no driver supervisor — so
    no child supervisor is ever forked.
-3. The child's closing `orchestratectl run merge` lands the merge and appends
+3. The child's closing `taskfleet run merge` lands the merge and appends
    a terminal `node.report` on the child's log (`merge.rs:185`), which the
    reducer folds to terminalize the child's `n-0001` node. But `run merge`
    never writes `run.status` and never tears down — those are the
@@ -49,7 +49,7 @@ Net effect for every orchestrated child of that driver:
    `--timeout` defaulted to none.
 
 This also explains the recovery the reporter described: `run cancel <child>`
-appends `run.status: cancelled` via `octl_core::cancel_run` (`cancel.rs:46`)
+appends `run.status: cancelled` via `taskfleet_core::cancel_run` (`cancel.rs:46`)
 but performs **no teardown** — teardown is, again, the supervisor's job, and
 there was no supervisor. By contrast `--kind spinoff` children that the
 reporter "re-ran" were top-level (no `--parent-run-id`), so each spawned its
@@ -73,7 +73,7 @@ node **is** registered (`node_count == 1`) after teardown, closing this out.
 ### Hypothesis #3 (agent merged manually) — not a doc bug
 
 The bundled `worktree-orchestrated` SKILL's closing recipe correctly invokes
-`orchestratectl run merge` (SKILL.template.md §"Terminal report", lines
+`taskfleet run merge` (SKILL.template.md §"Terminal report", lines
 167-225) — not a raw `git merge`. The merge + `issuectl` link commits the
 reporter saw are consistent with `run merge` having run. The doc is right; the
 run still hung because no supervisor consumed the report it submitted.
@@ -87,7 +87,7 @@ run still hung because no supervisor consumed the report it submitted.
    DAG aggregation — exactly the machinery fan-out already relies on. Each
    forked child supervisor then rolls its child up to `done` and tears down the
    child's worktree + window. The test-only skip hatches
-   (`--skip-materialize`, `OCTL_TEST_SKIP_MATERIALIZE`) still produce a pure
+   (`--skip-materialize`, `TASKFLEET_TEST_SKIP_MATERIALIZE`) still produce a pure
    skeleton with no supervisor.
 2. **`run cancel` teardown** falls out of (1) for free: with a live child
    supervisor, a cancel that pushes the child terminal is picked up on the next

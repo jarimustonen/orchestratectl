@@ -6,12 +6,12 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
-source_ref: orchestratectl:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:core
+source_ref: taskfleet:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:core
 originating_run: 01m0ncfdymcb0y72241p4q8nsz
 originating_run_kind: spinoff
 lane: worker-control-plane
 lane_seq: 10
-collision: [octl-core-schema, octl-core-reducer]
+collision: [taskfleet-core-schema, taskfleet-core-reducer]
 closed: 2026-08-24
 commits:
 - hash: 56c436b
@@ -24,7 +24,7 @@ commits:
 
 ## Description
 
-Implement the orchestratectl-owned telemetry storage boundary from the approved simplified worker-control-plane design.
+Implement the taskfleet-owned telemetry storage boundary from the approved simplified worker-control-plane design.
 
 ## Scope
 

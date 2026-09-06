@@ -37,8 +37,8 @@ per-tick rollup.
 ## Fix direction
 
 Base the terminalization decision on the same streaming log replay `read_cancel_ledger`
-uses (in `octl-core/src/cancel.rs`) rather than `list_nodes`. Options:
-- expose a log-derived per-node-status reader from `octl-core` and have
+uses (in `taskfleet-core/src/cancel.rs`) rather than `list_nodes`. Options:
+- expose a log-derived per-node-status reader from `taskfleet-core` and have
   `rollup_status` call it, or
 - move the roll-up classification into core entirely (it already owns
   `aggregate_terminal_status`).
@@ -55,5 +55,5 @@ That test fails with the current projection-scan implementation.
 
 ## Comments
 
-Hot-file caution: `crates/octl-cli/src/supervise/*` is a sequence-edits cluster.
+Hot-file caution: `crates/taskfleet-cli/src/supervise/*` is a sequence-edits cluster.
 Consider performance of a per-tick log scan vs the current directory read.

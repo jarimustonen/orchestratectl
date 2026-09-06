@@ -218,7 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # Guards the octl-core #![warn(missing_docs)] investment: fails on missing
+      # Guards the taskfleet-core #![warn(missing_docs)] investment: fails on missing
       # docs or broken intra-doc links.
       - run: cargo doc --locked --workspace --no-deps
 

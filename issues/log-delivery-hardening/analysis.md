@@ -9,7 +9,7 @@ deepseek-v4-pro) on commits `da1aad8..` (the implementation). Raw reviews:
 | # | Finding | Action |
 |---|---------|--------|
 | 1 | Metric buried in a prose `warnings` string — agents must regex-parse it (all 4) | Added additive `dropped_log_events: Option<u64>` envelope field (no schema bump). Kept the human string too. |
-| 2 | `OCTL_TEST_SLOW_LOG_WRITES` ships in release → stray env var stalls logging (all 4) | Gated `slow_log_write_delay()` behind `cfg(debug_assertions)`; release stub returns `None`. Hook is inert in shipped binaries; still live for the debug test binary. |
+| 2 | `TASKFLEET_TEST_SLOW_LOG_WRITES` ships in release → stray env var stalls logging (all 4) | Gated `slow_log_write_delay()` behind `cfg(debug_assertions)`; release stub returns `None`. Hook is inert in shipped binaries; still live for the debug test binary. |
 | 3 | Supervisor drop `warn!` rides the same lossy channel it reports on, so the SOS can itself be dropped (gpt, opus, deepseek) | `maybe_warn_dropped` now also `eprintln!`s the warning (reliable stderr → `supervisor.stderr.log`). |
 | 4 | `SlowLogWriter::write` mishandles short writes → truncated JSONL (opus, gpt, deepseek) | Use `write_all`, return full len. |
 | 5 | `duration_since` brittle with injected clock (gpt) | `saturating_duration_since`. |

@@ -30,12 +30,12 @@ fn bin(home: &TempDir) -> Command {
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
     // Run creation needs no materialized worktree for an endpoint-only test.
-    command.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    command.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     command
 }
 
 fn output(command: &mut Command) -> Output {
-    command.output().expect("spawn orchestratectl")
+    command.output().expect("spawn taskfleet")
 }
 
 fn success_json(command: &mut Command) -> Value {
@@ -118,9 +118,9 @@ impl PublicTelemetryEndpointDriver<'_> {
     fn submit(&self, bytes: &[u8]) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_taskfleet"))
             .env_remove("PATH")
-            .env_remove("OCTL_RUN_ID")
-            .env_remove("OCTL_NODE_ID")
-            .env_remove("OCTL_ATTEMPT")
+            .env_remove("TASKFLEET_RUN_ID")
+            .env_remove("TASKFLEET_NODE_ID")
+            .env_remove("TASKFLEET_ATTEMPT")
             .env("TASKFLEET_HOME", self.home.path())
             .env("HOME", self.home.path())
             .args(contract_endpoint_args())
@@ -352,9 +352,18 @@ fn published_contract_pins_the_public_boundary() {
         contract["environment"]["attempt_source"],
         "absolute node attempt: 0 at initial creation, current retry attempt thereafter"
     );
-    assert_eq!(contract["environment"]["run_id"]["name"], "OCTL_RUN_ID");
-    assert_eq!(contract["environment"]["node_id"]["name"], "OCTL_NODE_ID");
-    assert_eq!(contract["environment"]["attempt"]["name"], "OCTL_ATTEMPT");
+    assert_eq!(
+        contract["environment"]["run_id"]["name"],
+        "TASKFLEET_RUN_ID"
+    );
+    assert_eq!(
+        contract["environment"]["node_id"]["name"],
+        "TASKFLEET_NODE_ID"
+    );
+    assert_eq!(
+        contract["environment"]["attempt"]["name"],
+        "TASKFLEET_ATTEMPT"
+    );
     assert_eq!(
         contract["request"]["fields"]["tool_name"]["pattern"],
         "^[A-Za-z0-9_.:-]{1,64}$"

@@ -35,8 +35,8 @@ Second subtractive cut of the 0.2 simplification (ADR `docs/decisions/0001-thin-
 ## Scope (this cut only)
 
 **Remove the run kinds** `code`, `orchestrate`, `orchestrated`, `bugfix`, `make-skill`:
-- Delete these variants from the `Kind` enum (`crates/octl-core/src/schema.rs`) and every match arm / CLI arg / dispatch that only exists to serve them.
-- Collapse the now-dead kind-derived lifecycle **inference** in `crates/octl-cli/src/supervise/*` — with `code` gone, `Lifecycle::Interactive` empties; remove the inference branches that fan out on the removed kinds (analysis.md §C.3 named this the accidental complexity). Keep the surviving `spinoff` / `fan-out` / `research` / `technical-decision` topologies working.
+- Delete these variants from the `Kind` enum (`crates/taskfleet-core/src/schema.rs`) and every match arm / CLI arg / dispatch that only exists to serve them.
+- Collapse the now-dead kind-derived lifecycle **inference** in `crates/taskfleet-cli/src/supervise/*` — with `code` gone, `Lifecycle::Interactive` empties; remove the inference branches that fan out on the removed kinds (analysis.md §C.3 named this the accidental complexity). Keep the surviving `spinoff` / `fan-out` / `research` / `technical-decision` topologies working.
 - Remove the corresponding bundled skills: `/worktree-code`, `/orchestrate`, `/worktree-orchestrated`, `/worktree-bugfix`, `/worktree-make-skill` (and any companion files), plus the `bundled-orchestrate-skill` surface. Update the `/worktree` router so it no longer routes to removed variants.
 
 **Remove the mid-run discussion / spinoff-proposal machinery:**
@@ -51,7 +51,7 @@ Second subtractive cut of the 0.2 simplification (ADR `docs/decisions/0001-thin-
 
 ## Green gate + review
 
-- `cargo fmt --all`, `cargo clippy --workspace --all-targets` (no NEW warnings), `cargo test --workspace` (green). Refresh any insta snapshots the surface removal restales (CLI-surface change → the insta snapshot loop, `crates/octl-cli/CLAUDE.md`).
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets` (no NEW warnings), `cargo test --workspace` (green). Refresh any insta snapshots the surface removal restales (CLI-surface change → the insta snapshot loop, `crates/taskfleet-cli/CLAUDE.md`).
 - This is production code + a breaking change: run `/llm-review` (+ `/assess-findings`) before merging.
 - After merge, the integrated gate re-runs on `main`.
 

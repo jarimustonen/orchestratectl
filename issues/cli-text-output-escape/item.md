@@ -27,6 +27,6 @@ still needs an `escape_one_line` helper applied across:
 - `node list` / `node show`
 - `event tail --format text`
 
-Single helper in `octl-cli/src/output.rs` consumed by every text printer.
+Single helper in `taskfleet-cli/src/output.rs` consumed by every text printer.
 
 Discovered during: discussion-cli review (history/review-discussion-cli.md F17).

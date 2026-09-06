@@ -26,7 +26,7 @@ node**. Its manifest stayed at `status: pending` with:
 - `worktree_root: null`
 - `updated_at` == `created_at` (never progressed past creation)
 
-`orchestratectl run wait <id>` then **blocked for the full timeout (~6 h,
+`taskfleet run wait <id>` then **blocked for the full timeout (~6 h,
 `waited_ms: 21600189`)** before returning, still reporting
 `status: pending, landed: false, landed_method: unverified`.
 
@@ -49,11 +49,11 @@ creating node `n-0001`. It is unambiguously stuck, yet nothing surfaces that:
 
 ## Repro (observed 2026-08-07/08)
 
-1. `orchestratectl run create --kind spinoff --headless --title X --prompt-file …`
+1. `taskfleet run create --kind spinoff --headless --title X --prompt-file …`
    → success envelope, supervisor pid returned.
 2. Run never creates a node (root cause of the supervisor death not diagnosed;
    possibly resource contention — several spinoffs were spawned in the same wave).
-3. `orchestratectl run wait <id>` → blocks the full timeout, returns
+3. `taskfleet run wait <id>` → blocks the full timeout, returns
    `{status: pending, merged: false, landed: false, landed_method: unverified}`.
 4. `manifest.json` shows `supervisor.alive: false`, `node_count: 0`,
    `updated_at == created_at`.

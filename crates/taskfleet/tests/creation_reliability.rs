@@ -222,7 +222,7 @@ fn supervisor_boot_failure_is_loud_after_native_publication() {
         .env("HOME", home.path());
     tools.configure(&mut command, &worktree, "headless");
     let output = command
-        .env("OCTL_SUPERVISE_BIN", "/bin/false")
+        .env("TASKFLEET_SUPERVISE_BIN", "/bin/false")
         .args([
             "--output",
             "json",

@@ -26,21 +26,18 @@ receive none of these values (inherited ambient values are removed).
 
 The adapter, not the endpoint, captures the exact worker identity once from:
 
-- `OCTL_RUN_ID`: full, non-empty run ID;
-- `OCTL_NODE_ID`: non-empty node ID; and
-- `OCTL_ATTEMPT`: canonical unsigned decimal absolute attempt number
+- `TASKFLEET_RUN_ID`: full, non-empty run ID;
+- `TASKFLEET_NODE_ID`: non-empty node ID; and
+- `TASKFLEET_ATTEMPT`: canonical unsigned decimal absolute attempt number
   (`0` or `[1-9][0-9]*`, at most `4294967295`).
 
 If any value is absent, empty, or invalid, the adapter sends nothing for that
 session and records only a local diagnostic. It never guesses attempt `0` and
 never takes identity from lifecycle event data.
 
-The adapter submits the strict request on stdin to only this canonical public
-command, available beginning with Taskfleet 0.6.0. The request protocol remains
-v1: an adapter targeting a 0.5.1 installation uses the historical
-`orchestratectl` executable, and the bounded Cargo wrapper keeps that executable
-available through Taskfleet 0.7.x. Fresh Homebrew/shell/archive Taskfleet
-channels expose only `taskfleet`.
+The adapter submits the strict request on stdin to this public Taskfleet
+command. The request protocol remains v1 and every supported distribution
+channel exposes the same `taskfleet` executable.
 
 ```text
 taskfleet node telemetry update --input-file - --output json

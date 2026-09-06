@@ -13,7 +13,7 @@ closed: 2026-08-10
 
 # Flaky: dry_run_projections_match_real_apply_writes fails only under CI parallelism (event.rs)
 
-_Source: crates/octl-cli/tests/event.rs_
+_Source: crates/taskfleet-cli/tests/event.rs_
 
 ## Description
 

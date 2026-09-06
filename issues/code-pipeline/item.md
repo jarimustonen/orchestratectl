@@ -15,8 +15,8 @@ closed: 2026-08-17
 The spec-driven, model-tiered code pipeline (plan v3 schema, floor/pipeline
 modules, harness heavy layer). Implemented as a walking skeleton in July 2026,
 then **cut by DECISION-1** (2026-08-14, `cut-pipeline-floor-harness-heavy`):
-the 0.2 simplification removed `crates/octl-cli/src/{floor,pipeline}/*` and the
-heavy harness layer. The last remnant, the dead `octl-core/src/plan.rs` module,
+the 0.2 simplification removed `crates/taskfleet-cli/src/{floor,pipeline}/*` and the
+heavy harness layer. The last remnant, the dead `taskfleet-core/src/plan.rs` module,
 is tracked as `@cut-plan-module`.
 
 ## Issues

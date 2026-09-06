@@ -47,7 +47,7 @@ The supervisor stops inferring the agent's state from a cross-product of proxies
 (pid × pane × branch × report × three activity clocks). There is exactly **one
 completion truth**, and it already exists and is durable:
 
-> **A unit is DONE iff the worker called `orchestratectl run merge`** — which, under the
+> **A unit is DONE iff the worker called `taskfleet run merge`** — which, under the
 > run lock, rebases + merges + appends the durable `explicit-merge` transition. That
 > append **is** the completion fact.
 
@@ -66,7 +66,7 @@ Everything the current watchdog does to *guess* done-ness is **deleted**:
 `0`, and forgot `run merge` is *indistinguishable* from a segfault — so a naive backstop
 would auto-`fail` the exact `agent-skips-run-merge-idle-pending` case the design claims to
 handle manually. The fix is already in `alternatives.md` Rec 3 (the "pairs with either
-model" adjunct): **wrap worker launch in a thin launcher shim** (`octl-run-worker <run>
+model" adjunct): **wrap worker launch in a thin launcher shim** (`taskfleet-run-worker <run>
 <node> -- pi …`) that `wait()`s on the child and records its **true exit status** as a
 durable event under the run lock. This is a shim, not a protocol — no per-SKILL churn.
 
@@ -182,7 +182,7 @@ above still classified rows by sniffing string conventions on the terminal
 `node.report`: `via: "explicit-merge"` (merge) and `reason.starts_with("agent-")` +
 a hard-coded reason list (supervisor failure vs blocked handoff). Those conflate the
 report's *author* with its *content* and misclassify silently when a new supervisor
-reason is added. A typed `ReportOrigin` (`octl_core::report`) is now stamped on the
+reason is added. A typed `ReportOrigin` (`taskfleet_core::report`) is now stamped on the
 event by the path that appends it — `run merge`/its recovery stamps
 `RunMerge{op_id, worker_oid}` (the SOLE merge authority; an agent `node report` is
 normalized to `Agent`, so it can never assert a merge origin), the supervisor stamps
@@ -333,7 +333,7 @@ window would mean carrying *both* surfaces — the exact dead-weight drag 0.2 re
   [harness]` sections, deregistered sync rows. Extends the existing skill-prune /
   orphan-companion detection to the newly-removed surfaces. Removed via an explicit
   `doctor` prune/fix action.
-- **Never destroyed (history data):** `~/.orchestratectl/runs/*` directories whose kind
+- **Never destroyed (history data):** `~/.taskfleet/runs/*` directories whose kind
   was removed. This is the very evidence `feature-audit.md` mined (717 runs). `doctor`
   may **report** "N runs use a removed kind" but must not delete them.
 

@@ -6,7 +6,7 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
-source_ref: orchestratectl:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:adapter
+source_ref: taskfleet:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:adapter
 originating_run: 01m0ncfdymcb0y72241p4q8nsz
 originating_run_kind: spinoff
 lane: worker-telemetry-adapter
@@ -23,11 +23,11 @@ commits:
 
 ## Description
 
-Define and validate the contract for a small external pi extension/package that depends only on orchestratectl's stable public telemetry update endpoint. No adapter runtime or pi extension production code belongs in this repository.
+Define and validate the contract for a small external pi extension/package that depends only on taskfleet's stable public telemetry update endpoint. No adapter runtime or pi extension production code belongs in this repository.
 
 ## Repository scope
 
-- Publish the stable public adapter contract: request/response DTO, four-state precedence, 30/90-second refresh/freshness bounds, tool metadata grammar and bounds, 4 KiB cap, two-second send floor, single-flight rule, exact `OCTL_RUN_ID`/`OCTL_NODE_ID`/`OCTL_ATTEMPT` environment names, and privacy exclusions.
+- Publish the stable public adapter contract: request/response DTO, four-state precedence, 30/90-second refresh/freshness bounds, tool metadata grammar and bounds, 4 KiB cap, two-second send floor, single-flight rule, exact `TASKFLEET_RUN_ID`/`TASKFLEET_NODE_ID`/`TASKFLEET_ATTEMPT` environment names, and privacy exclusions.
 - Provide bounded conformance fixtures against the real public endpoint, including valid/invalid payloads, old attempts, endpoint failure, refresh, and event-storm-shaped update sequences.
 - Keep the fixtures harness-neutral so the separately owned package can consume them.
 
@@ -41,7 +41,7 @@ Define and validate the contract for a small external pi extension/package that 
 ## Acceptance criteria
 
 - The repository contract and conformance fixtures pass against the implemented public endpoint.
-- This repository contains no adapter runtime, pi event-handling implementation, orchestratectl internal import, pi private manager/EventBus access, process-manager integration, session JSONL access, or private-log access.
+- This repository contains no adapter runtime, pi event-handling implementation, taskfleet internal import, pi private manager/EventBus access, process-manager integration, session JSONL access, or private-log access.
 - Payloads exclude tool arguments, commands, paths, output, prompts, errors, provider/model/session identity, and call IDs.
 - Endpoint failure leaves the prior sample to become stale and never becomes run truth.
 - No probe executable, package provenance/integrity requirement, trusted root, open/reopen fencing, immutable client sequence, launch attestation, or permission-aware integration is added.

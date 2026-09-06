@@ -10,7 +10,7 @@ closed: 2026-08-11
 
 # doctor: detect orphan companion files (installed by a prior binary, no longer bundled)
 
-_Source: crates/octl-cli/src/{doctor/checks/skill.rs,skill.rs}_
+_Source: crates/taskfleet-cli/src/{doctor/checks/skill.rs,skill.rs}_
 
 ## Description
 

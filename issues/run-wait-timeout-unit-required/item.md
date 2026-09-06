@@ -17,7 +17,7 @@ closed: 2026-08-06
 During a `/stint` round I ran (via a skill's documented pattern):
 
 ```
-orchestratectl run wait <run-id> --timeout 2400
+taskfleet run wait <run-id> --timeout 2400
 ```
 
 It failed immediately with:

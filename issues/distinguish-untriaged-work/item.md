@@ -6,7 +6,7 @@ reporter: jari
 status: done
 priority: high
 lane: skills
-collision: [crates/octl-cli/skills/stint-start/SKILL.template.md]
+collision: [crates/taskfleet-cli/skills/stint-start/SKILL.template.md]
 closed: 2026-08-21
 commits:
 - hash: 1596dd2

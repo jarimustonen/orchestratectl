@@ -27,7 +27,7 @@ The desired experience is a bounded loop that advances autonomously until the ne
 
 ## User-owned policy and prompt context
 
-Explore a user-owned orchestratectl configuration layer, using the existing `~/.orchestratectl/config.toml` conventions (and `$ORCHESTRATECTL_HOME`) rather than embedding Jari-specific behavior in public source artifacts. Candidate settings include:
+Explore a user-owned taskfleet configuration layer, using the existing `~/.taskfleet/config.toml` conventions (and `$TASKFLEET_HOME`) rather than embedding Jari-specific behavior in public source artifacts. Candidate settings include:
 
 - whether automatic handoff/wrap-up is enabled;
 - a path to a user-owned prompt/instruction file whose text is appended to handoff/wrap-up context;
@@ -43,12 +43,12 @@ Public bundled skills, help text, snapshots, examples, and defaults must remain 
 
 Investigate how pi.dev can advance the lifecycle again after an asynchronous worker settles or after the user acknowledges a checkpoint. Keep the architecture harness-neutral:
 
-- orchestratectl owns durable stint/checkpoint state and a composable CLI/JSON contract;
+- taskfleet owns durable stint/checkpoint state and a composable CLI/JSON contract;
 - a pi.dev extension/runtime adapter may observe or wait on that neutral contract and inject a follow-up turn;
-- orchestratectl must not import `@aliou/pi-processes`, access its manager/EventBus, assume its process IDs or log paths, or make a session-scoped pi process the durable state owner;
+- taskfleet must not import `@aliou/pi-processes`, access its manager/EventBus, assume its process IDs or log paths, or make a session-scoped pi process the durable state owner;
 - the existing homebase ADR 0011 decision and the obsolete `@pi-background-jobs-extension` issue are constraints, not a proposal to rebuild a custom background-jobs extension here.
 
-The adapter may belong outside this repository. This issue should identify that boundary and stage follow-up work in the owning repository rather than coupling it into orchestratectl.
+The adapter may belong outside this repository. This issue should identify that boundary and stage follow-up work in the owning repository rather than coupling it into taskfleet.
 
 ## Phase 1 — workflow ideation and decision (first delivery)
 
@@ -63,7 +63,7 @@ Start with an ideation/design phase tailored to Jari's actual work pattern. Do n
    - a release-capable repository versus a repository with no deploy/release step;
    - closing the session now versus keeping the pi.dev loop alive.
 3. Propose a small explicit state machine and vocabulary, including the durable user-feedback checkpoint and the final acknowledgement that makes the next stint eligible.
-4. Compare at least two ownership models: skill-only orchestration versus a thin orchestratectl stint/checkpoint state surface with skills as policy/execution clients.
+4. Compare at least two ownership models: skill-only orchestration versus a thin taskfleet stint/checkpoint state surface with skills as policy/execution clients.
 5. Design the layered config and effective-policy inspection surface, including safe defaults and conflict handling.
 6. Define the neutral wake/resume protocol that a pi.dev adapter could consume without harness coupling.
 7. Record the chosen design under this issue (`design.md` and, if architectural, an ADR via the technical-decision workflow), with phased implementation slices and migration/backward-compatibility notes.
@@ -71,7 +71,7 @@ Start with an ideation/design phase tailored to Jari's actual work pattern. Do n
 
 ## Design questions
 
-- Is a stint itself durable orchestratectl state, or is only its user checkpoint durable while issuectl/TODO remain the scheduling and handoff sources?
+- Is a stint itself durable taskfleet state, or is only its user checkpoint durable while issuectl/TODO remain the scheduling and handoff sources?
 - What is the exact command/skill that acknowledges a checkpoint, records decisions, and marks the next stint ready?
 - Can automatic wrap-up safely run while any worker remains live, awaiting input, recoverable, or repository-unidentified?
 - Which steps are mandatory invariants versus configurable conveniences?
@@ -88,7 +88,7 @@ Start with an ideation/design phase tailored to Jari's actual work pattern. Do n
 - Jari's target workflow is captured through scenario-based ideation, not inferred solely from existing prose.
 - A reviewed state-machine proposal defines start, executing, preparing-handoff, awaiting-user, finalizing, and ready-for-next-stint semantics (names may change).
 - Config ownership, precedence, safe defaults, and effective-policy observability are decided.
-- The orchestratectl/pi.dev boundary honors the harness-neutral constraint and names any external follow-up repository.
+- The taskfleet/pi.dev boundary honors the harness-neutral constraint and names any external follow-up repository.
 - Implementation is split into independently reviewable issues only after the design checkpoint.
 
 ### Eventual outcome
@@ -96,7 +96,7 @@ Start with an ideation/design phase tailored to Jari's actual work pattern. Do n
 - One normal entrypoint can drive a stint from start to the next meaningful user checkpoint.
 - User answers can be recorded and explicitly acknowledged/finalized, after which the next stint starts from a coherent durable state.
 - Existing individual skills remain usable and composable; environments without the pi adapter are not second-class.
-- No personal policy or private prompt text is compiled into or committed with orchestratectl.
+- No personal policy or private prompt text is compiled into or committed with taskfleet.
 - Autonomous commit/push/deploy/release behavior is explainable, bounded by effective policy, and fails closed when policy or required commands are ambiguous.
 
 ## Related work

@@ -15,7 +15,7 @@ closed: 2026-08-06
 Follow-up from the `immoderately-dirty-cushion` multi-model review (gemini/openai
 /opus/deepseek).
 
-In `run_wave_concurrent` (`crates/octl-cli/src/pipeline/live/mod.rs`), when one
+In `run_wave_concurrent` (`crates/taskfleet-cli/src/pipeline/live/mod.rs`), when one
 build worker returns a hard `PipelineError`, the fold `?`-propagates BEFORE
 preserving the wave's other floor-green (`built`) and committed-but-blocked
 (`blocked`) sibling worktrees, so `Run::Drop` teardown discards real committed

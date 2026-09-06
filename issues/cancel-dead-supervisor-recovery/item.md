@@ -14,7 +14,7 @@ closed_by: jari
 
 # Extend dead-supervisor liveness recovery to run cancel
 
-_Source: crates/octl-cli/src/run/cancel.rs_
+_Source: crates/taskfleet-cli/src/run/cancel.rs_
 
 ## Description
 

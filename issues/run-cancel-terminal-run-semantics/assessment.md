@@ -1,7 +1,7 @@
 # Review assessment — run-cancel-terminal-run-semantics
 
 Source: `/llm-review` with gemini-3.1-pro, gpt-5.5, claude-opus-4-7, deepseek-v4-pro
-(1 round, 4 reviewers) on `crates/octl-core/src/cancel.rs`, `crates/octl-cli/src/run/cancel.rs`,
+(1 round, 4 reviewers) on `crates/taskfleet-core/src/cancel.rs`, `crates/taskfleet-cli/src/run/cancel.rs`,
 and the supporting `error.rs` / `events.rs` / `schema.rs` context. Full raw reviews saved to
 `history/review-cancel.md`.
 
@@ -40,7 +40,7 @@ explicitly pre-authorized exit 2** ("Defaults to use without asking: … error c
 rather than silently overriding it on review. `error.rs` does describe exit 2 as
 "refused-but-actionable (system/IO)", which is a partial textual defense, but `AGENTS-AI-FIRST-CLI.md`
 says plainly "2 = system error". **Recommendation: flip to exit 1 (`CliError::user`)** for
-consistency with `run_not_found`. One-line change in `crates/octl-cli/src/run/cancel.rs` plus the
+consistency with `run_not_found`. One-line change in `crates/taskfleet-cli/src/run/cancel.rs` plus the
 exit-code assertion in `cancel_done_run_is_refused_run_already_terminal`. Flagged for the user to
 confirm.
 

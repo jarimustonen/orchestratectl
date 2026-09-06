@@ -13,4 +13,4 @@ closed: 2026-06-28
 
 ## Description
 
-After all skills bundled: orchestratectl skill install --all --force into ~/.claude/skills/. Smoke-test each kind end-to-end. Add 'orchestratectl import-existing-tmux' (or 'run adopt') to adopt pre-existing wm-* / 🎬-prefixed windows as synthetic runs. Sunset homebase ~/.claude/skills/worktree-* etc. (or keep as fallback for one release).
+After all skills bundled: taskfleet skill install --all --force into ~/.claude/skills/. Smoke-test each kind end-to-end. Add 'taskfleet import-existing-tmux' (or 'run adopt') to adopt pre-existing wm-* / 🎬-prefixed windows as synthetic runs. Sunset homebase ~/.claude/skills/worktree-* etc. (or keep as fallback for one release).

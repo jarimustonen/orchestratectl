@@ -16,7 +16,7 @@ closed: 2026-08-24
 
 ## Goal
 
-Remove source-tree `cargo install --path ...` from orchestratectl's stint/deploy operating policy. Repository work builds and tests repository-local artifacts; it does not replace the user's globally installed orchestratectl binary or reinstall bundled instructions as a stint side effect.
+Remove source-tree `cargo install --path ...` from taskfleet's stint/deploy operating policy. Repository work builds and tests repository-local artifacts; it does not replace the user's globally installed taskfleet binary or reinstall bundled instructions as a stint side effect.
 
 ## Product decision
 
@@ -27,13 +27,13 @@ Jari decided 2026-08-23 that building this repository does not imply installing 
 - Update root AGENTS.md operating policy and duplicated lifecycle/deploy snippets.
 - Update the active TODO handoff so it no longer requests commit-equality local deployment.
 - Preserve release behavior: releases remain tag/CI driven; no local `cargo publish`.
-- Preserve worker-local validation via `cargo build --release` and explicit `./target/release/orchestratectl` execution.
+- Preserve worker-local validation via `cargo build --release` and explicit `./target/release/taskfleet` execution.
 - State clearly that installed release binaries are upgraded through the distribution channel, outside repository build/test work.
 - Close `considerably-utter-deer` as obsolete after policy documentation lands: the transient post-`cargo install --path` provenance probe no longer occurs in the supported stint workflow.
 
 ## Acceptance Criteria
 
-- [x] No normal stint instruction invokes `cargo install --path crates/octl-cli` or mutates global orchestratectl installation/installed skills.
+- [x] No normal stint instruction invokes `cargo install --path crates/taskfleet-cli` or mutates global taskfleet installation/installed skills.
 - [x] Green-gate and release rules remain intact.
 - [x] Documentation distinguishes repository-local build/test from distribution-channel installation.
 - [x] The stale provenance intake is closed obsolete with this policy decision recorded.
@@ -42,4 +42,4 @@ Jari decided 2026-08-23 that building this repository does not imply installing 
 
 ### 2026-08-24T08:04:08Z · @issuectl
 
-Updated root operating policy, active handoff, contributor guidance, and bundled workflow instructions: repository work has no stint deploy step, validates local artifacts explicitly, and never mutates the installed orchestratectl or bundled skills. Release publication remains tag/CI driven.
+Updated root operating policy, active handoff, contributor guidance, and bundled workflow instructions: repository work has no stint deploy step, validates local artifacts explicitly, and never mutates the installed taskfleet or bundled skills. Release publication remains tag/CI driven.

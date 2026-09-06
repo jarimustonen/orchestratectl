@@ -16,7 +16,7 @@ closed: 2026-06-28
 
 Symptom: when an autonomous-kind run reaches a terminal state (the worker either submits a `node report` or the user runs `run cancel`), the per-run supervisor process exits — but the worker's tmux window is NOT closed. The user sees a tmux window with a quiescent Claude prompt and no obvious way to tell whether it is still doing something. Cleanup requires manual `tmux kill-window`.
 
-First observed 2026-06-28 (haukinen) immediately after `orchestratectl run cancel 01kw79n2yv3epts3amfszmv3aa`. Supervisor PID 72879 died within 3 seconds (correct), but tmux window `default:6` (🎬 🚀 wt-01kw79n2yv-supervise-test-teardown-leak) stayed open. Same observation expected for any /worktree-spinoff that submits a terminal node.report once `spinoff-must-submit-node-report` (the SKILL fix in flight) lands — the SKILL change alone will not auto-close the window.
+First observed 2026-06-28 (haukinen) immediately after `taskfleet run cancel 01kw79n2yv3epts3amfszmv3aa`. Supervisor PID 72879 died within 3 seconds (correct), but tmux window `default:6` (🎬 🚀 wt-01kw79n2yv-supervise-test-teardown-leak) stayed open. Same observation expected for any /worktree-spinoff that submits a terminal node.report once `spinoff-must-submit-node-report` (the SKILL fix in flight) lands — the SKILL change alone will not auto-close the window.
 
 Expected behavior (autonomous kinds only):
 
@@ -36,7 +36,7 @@ Edge cases:
 
 Fix direction:
 
-1. In `crates/octl-cli/src/supervise/` (the supervisor binary's main loop), add a terminal-transition handler. When the run becomes terminal AND `Kind::lifecycle()` returns `Autonomous`, look up `node.tmux_identity` from the manifest (or the latest `node.created` event) and call `tmux kill-window`.
+1. In `crates/taskfleet-cli/src/supervise/` (the supervisor binary's main loop), add a terminal-transition handler. When the run becomes terminal AND `Kind::lifecycle()` returns `Autonomous`, look up `node.tmux_identity` from the manifest (or the latest `node.created` event) and call `tmux kill-window`.
 2. Add integration tests that exercise both paths — terminal-via-report and terminal-via-cancel — and assert the tmux window is gone afterwards. The test fixture can stub tmux by intercepting the kill-window call (the supervisor should use a helper trait or a process spawn that the test can swap).
 3. Document this in the SKILL.md "Following progress" section so the agent / user knows: "tmux window auto-closes for autonomous kinds when the run reaches terminal state; interactive kinds keep the window open until the user closes it themselves".
 

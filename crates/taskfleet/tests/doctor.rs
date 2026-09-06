@@ -48,7 +48,7 @@ struct Env {
 fn setup() -> Env {
     let home = tempfile::tempdir().expect("tempdir");
     let orch = home.path().join("orch");
-    // Create the orchestratectl home so `config.home` reports OK.
+    // Create the taskfleet home so `config.home` reports OK.
     std::fs::create_dir_all(&orch).unwrap();
     Env {
         home,
@@ -97,7 +97,7 @@ fn running_binary_commit(env: &Env) -> String {
     value["data"]["commit"].as_str().unwrap().to_owned()
 }
 
-fn fake_orchestratectl_checkout(env: &Env) -> PathBuf {
+fn fake_taskfleet_checkout(env: &Env) -> PathBuf {
     let root = env.home.path().join("source");
     std::fs::create_dir_all(root.join("crates/taskfleet")).unwrap();
     std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -105,19 +105,6 @@ fn fake_orchestratectl_checkout(env: &Env) -> PathBuf {
     std::fs::write(
         root.join("crates/taskfleet/Cargo.toml"),
         "[package]\nname = \"taskfleet\"\nversion = \"0.0.0\"\n",
-    )
-    .unwrap();
-    root
-}
-
-fn fake_compatibility_checkout(env: &Env) -> PathBuf {
-    let root = env.home.path().join("compat-source");
-    std::fs::create_dir_all(root.join("compat/orchestratectl")).unwrap();
-    std::fs::create_dir_all(root.join(".git")).unwrap();
-    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
-    std::fs::write(
-        root.join("compat/orchestratectl/Cargo.toml"),
-        "[package]\nname = \"orchestratectl\"\nversion = \"0.0.0\"\n",
     )
     .unwrap();
     root
@@ -140,7 +127,7 @@ fn stub_git_head(env: &Env, root: &Path, head: &str) {
 #[test]
 fn binary_commit_matches_applicable_repository_head() {
     let env = setup();
-    let root = fake_orchestratectl_checkout(&env);
+    let root = fake_taskfleet_checkout(&env);
     let commit = running_binary_commit(&env);
     assert_eq!(
         commit.len(),
@@ -168,27 +155,9 @@ fn binary_commit_matches_applicable_repository_head() {
 }
 
 #[test]
-fn binary_commit_recognises_compatibility_checkout() {
-    let env = setup();
-    let root = fake_compatibility_checkout(&env);
-    let commit = running_binary_commit(&env);
-    stub_git_head(&env, &root, &commit);
-
-    let out = bin(&env)
-        .current_dir(&root)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn doctor");
-    assert!(out.status.success(), "compatibility checkout: {out:?}");
-    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
-    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
-    assert_eq!(check["details"]["comparison"], "match");
-}
-
-#[test]
 fn binary_commit_mismatch_warns_without_failing() {
     let env = setup();
-    let root = fake_orchestratectl_checkout(&env);
+    let root = fake_taskfleet_checkout(&env);
     let head = "0000000000000000000000000000000000000000";
     stub_git_head(&env, &root, head);
 
@@ -266,7 +235,7 @@ fn binary_commit_is_not_compared_in_a_foreign_git_repository() {
 #[test]
 fn binary_commit_reports_unavailable_when_applicable_head_cannot_be_read() {
     let env = setup();
-    let root = fake_orchestratectl_checkout(&env);
+    let root = fake_taskfleet_checkout(&env);
     let script = format!(
         "#!/bin/sh\nif [ \"$3\" = rev-parse ] && [ \"$4\" = --show-toplevel ]; then\n  printf '%s\\n' '{}'\nelse\n  exit 1\nfi\n",
         root.display()

@@ -11,14 +11,14 @@ closed: 2026-07-26
 ## Summary
 
 When a supervised agent's process **dies after committing complete, clean, mergeable
-work** on its worktree branch — but **before** calling `orchestratectl run merge` — the
+work** on its worktree branch — but **before** calling `taskfleet run merge` — the
 supervisor records a terminal `agent-died` **failed** report and preserves the branch, but
 does nothing to signal that the stranded work is *recoverable*. The run reads as a total
 failure. A human must manually discover the unmerged commits (`git log <source>..<branch>`)
 and hand-spawn a salvage. The auto-reconcile path only rescues work that was *already
 merged* to source; committed-but-unmerged work falls through the gap.
 
-**Version:** orchestratectl `0.1.0`
+**Version:** taskfleet `0.1.0`
 **Reporter:** ossctl `/stint` session (2026-07-26)
 
 ## Real incident (evidence)
@@ -38,20 +38,20 @@ source `main`):
 
 ## Root-cause scope (important — this is NOT a false-reap)
 
-The `agent-died` verdict is correct. `check_liveness` (`crates/octl-cli/src/supervise/
+The `agent-died` verdict is correct. `check_liveness` (`crates/taskfleet-cli/src/supervise/
 watchdog.rs:407`) returns `Liveness::Dead` purely from `pid_file::pid_alive(pid)` →
 `kill(pid, 0)` failing. The **underlying agent process genuinely exited**; the supervisor
 imposes no max-lifetime kill (the only SIGTERMs are its own shutdown path). So the watchdog
 did the right thing.
 
-**Why the agent process itself exited at ~31 min is out of scope for orchestratectl** — it
+**Why the agent process itself exited at ~31 min is out of scope for taskfleet** — it
 is an agent-runtime concern (Claude Code / codex process exit/crash/limit), not a supervisor
-defect, and orchestratectl cannot prevent it. This issue is strictly about **what
-orchestratectl does with the salvageable work a dead agent leaves behind.**
+defect, and taskfleet cannot prevent it. This issue is strictly about **what
+taskfleet does with the salvageable work a dead agent leaves behind.**
 
 ## The gap
 
-The reconcile-to-success branch in `crates/octl-cli/src/supervise/mod.rs` (~L2115) only
+The reconcile-to-success branch in `crates/taskfleet-cli/src/supervise/mod.rs` (~L2115) only
 converts a dead node to SUCCESS when `cleanup::node_branch_merged_to_source` is already
 true (branch merged, terminal report lost). There is **no handling for the strictly more
 common case**: the branch has commits *ahead of* source that would merge cleanly, but the
@@ -66,7 +66,7 @@ branch with no recoverability signal.
    `unmerged_commits:N`, `merges_cleanly:true/false`, worktree path). `run show` / `run
    wait` then surface "N unmerged commits recoverable on <branch>" instead of a bare
    failure — a caller (or `/stint`) can decide to salvage without hand-rolling `git log`.
-2. **Recovery command:** add `orchestratectl run salvage <run-id>` that fast-forwards /
+2. **Recovery command:** add `taskfleet run salvage <run-id>` that fast-forwards /
    cherry-picks the preserved branch into a fresh worktree for review+merge (what the
    `/stint` conductor did by hand this time), or merges directly under a `--no-review`
    flag.

@@ -23,16 +23,16 @@ CI on main is red. Snapshot test `version_envelopes` fails because the version w
 ```
 test version_envelopes ... FAILED
 Snapshot: version_text
-Source: crates/octl-cli/tests/envelope_snapshots.rs:233
+Source: crates/taskfleet-cli/tests/envelope_snapshots.rs:233
 -old snapshot
 +new results
-- orchestratectl 0.1.4
-+ orchestratectl 0.1.5
+- taskfleet 0.1.4
++ taskfleet 0.1.5
 ```
 
 ## Root cause
 
-Release v0.1.5 was cut and published, but the insta snapshot at `crates/octl-cli/tests/snapshots/envelope_snapshots__version_text.snap` was not re-recorded.
+Release v0.1.5 was cut and published, but the insta snapshot at `crates/taskfleet-cli/tests/snapshots/envelope_snapshots__version_text.snap` was not re-recorded.
 
 ## Fix
 
@@ -40,4 +40,4 @@ Run `cargo insta review` (or `cargo test -- --accept`) to accept the new snapsho
 
 ## Ref
 
-- Run: https://github.com/jarimustonen/orchestratectl/actions/runs/31456616587
+- Run: https://github.com/jarimustonen/taskfleet/actions/runs/31456616587

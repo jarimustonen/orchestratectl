@@ -5,11 +5,11 @@ type: improvement
 closed: 2026-06-28
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 related: ['@core-path-traversal-id-validation', '@supervisor-pid-symlink-containment', '@run-state-symlink-toctou-openat2']
 ---
 
-# octl-core: symlink/TOCTOU containment for run state dirs
+# taskfleet-core: symlink/TOCTOU containment for run state dirs
 
 ## Description
 
@@ -27,6 +27,6 @@ Added best-effort symlink containment via `symlink_metadata` rejection (pure std
 - The `nodes/`/`discussions/`/`spinoffs/` subdirs and every projection file, plus `manifest.json`, `events.jsonl` (append + idempotency read), and the `.lock` file (in `RunLock::acquire`).
 - New errors `SymlinkRunDir`, `SymlinkSubdir { name }`, `SymlinkStateFile { name }`; CLI maps all three to the `corrupt_run` envelope (exit 1) carrying the offending path.
 
-Trust model documented in code: state root is `$HOME/.orchestratectl/`, per-user 0700, no shared writers — so symlinks at/above the run root (`runs/`, `$HOME`) are out of scope. The check-then-open TOCTOU residual gap is documented on `reject_symlink`.
+Trust model documented in code: state root is `$HOME/.taskfleet/`, per-user 0700, no shared writers — so symlinks at/above the run root (`runs/`, `$HOME`) are out of scope. The check-then-open TOCTOU residual gap is documented on `reject_symlink`.
 
 Multi-model /llm-review assessment: `assessment.md`. Spin-offs filed: `supervisor-pid-symlink-containment` (extend to the CLI-owned PID file), `run-state-symlink-toctou-openat2` (close TOCTOU with openat2/O_NOFOLLOW + Windows reparse points if the threat model widens).

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Taskfleet are documented here. Historical releases retain the `orchestratectl` name. The format
+All notable changes to Taskfleet are documented here. Historical releases retain the `taskfleet` name. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -10,6 +10,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 ### Changed
+
+- Make Taskfleet the sole maintained product identity across packages, commands,
+  state/config paths, environment and protocol fields, skills, documentation,
+  repository metadata, and release/distribution contracts.
+
+### Removed
+
+- Remove the transitional package, executable, dispatch, resolver, state-adoption,
+  warning, installer, and skill-rename machinery. Existing installations and state
+  are intentionally not discovered or changed.
 
 ### Fixed
 <!-- oss-changelog:unreleased-end -->
@@ -30,32 +40,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Worker selection can resolve user-owned executable profiles (`worker-profile-config-resolver`).** `run create --profile` now selects bounded capability/residency profiles from user config, enforces autonomous pi+`worker-v1` eligibility with deterministic non-weakening fallback, and records the requested and selected choice across dry-run, create, and `run show`; repository config remains selection-only and legacy no-profile runs stay readable.
 - **Recorded worker profiles now drive launch and telemetry policy (`worker-telemetry-harness-enforcement`).** Create and retry execute the selected candidate's exact recorded argv, export exact adapter identity only for configured pi telemetry, and expose recorded `requirement`/`support` in `run show` without inferring either from samples.
 
-- Rename orchestratectl to Taskfleet (`rename-taskfleet`).
+- Establish Taskfleet as the canonical product identity (`rename-taskfleet`).
 
 ### Changed
 
-- **Release publication now follows an exact five-leg Taskfleet saga (`taskfleet-release-machinery`).** The pinned Shipshape plan carries three ordered crates.io targets plus independent GitHub Release and Homebrew targets; CI publishes `taskfleet-core` → `taskfleet` → the bounded `orchestratectl` wrapper only from an activated exact tag, reconciles checksum/owners/full dependencies/version metadata/source commit without trusting Cargo error text, and preserves resumable held-tag and partial-release receipts.
-- **Bundled workflows and repository contracts now use the canonical Taskfleet identity (`taskfleet-skills-docs-contracts`).** New prompts, source references, examples and telemetry endpoint commands use `taskfleet`; Taskfleet-owned skill names migrate by recorded hashes while edited/unmanaged copies are preserved, and stable `OCTL_*` plus the telemetry contract id remain unchanged.
-- **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
-
-- Add the Taskfleet dual-name resolver and legacy-home adoption (`taskfleet-dual-name-resolver`).
-- Conform skill installer to canon section 15 (`overly-knowing-family`).
-- Create canonical Taskfleet packages and the bounded old CLI wrapper (`taskfleet-package-wrapper`).
-- Cut and verify Taskfleet 0.6.0 (`taskfleet-release-0-6-0`).
-- Define external pi telemetry adapter contract (`worker-telemetry-pi-adapter`).
-- Extract the shared Taskfleet CLI dispatcher (`taskfleet-shared-dispatcher`).
-- Freeze Taskfleet rename identity inventory (`taskfleet-rename-inventory`).
-- Implement configurable agent profile resolver (`worker-profile-config-resolver`).
-- Implement worker telemetry control and bounded sample (`worker-telemetry-core-control`).
-- Integrate selected agent launch and telemetry visibility (`worker-telemetry-harness-enforcement`).
-- Prepare Taskfleet cargo-dist and Homebrew topology (`taskfleet-distribution-topology`).
-- Produce immutable integrated Taskfleet pre-cut evidence (`taskfleet-integrated-validation`).
-- Rebuild Taskfleet registry and Shipshape release machinery (`taskfleet-release-machinery`).
-- Remove stint local source installation (`remove-stint-local-install`).
-- Rename Taskfleet source repository (`taskfleet-source-repository-rename`).
-- Reshape worker control plane implementation DAG (`reshape-worker-control-plane-dag`).
-- Review worker telemetry and agent profiles as one control plane (`worker-control-plane-review`).
-- Validate and roll out worker telemetry end to end (`worker-telemetry-e2e-rollout`).
+- Adopt the Taskfleet package and command surface.
+- Conform the skill installer to canon section 15 (`overly-knowing-family`).
+- Use Shipshape for release automation.
+- Define and validate the worker telemetry control plane and configurable agent
+  profiles (`worker-telemetry-pi-adapter`, `worker-profile-config-resolver`,
+  `worker-telemetry-core-control`, `worker-telemetry-harness-enforcement`).
+- Remove stint-time local source installation (`remove-stint-local-install`).
 
 ### Fixed
 
@@ -75,7 +70,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **Bundled install guidance now reflects the live release channels (`skills-stale-tbd-channels`).** Removed the obsolete warning that the working Homebrew and cargo-dist shell installer commands were placeholders.
-- **Bundled worker guidance now verifies the artifact CI ships (`align-green-gate`).** Worktree briefs use the locked release-mode nextest, doctest, clippy, and rustdoc gate, and workers build and invoke their worktree-local binary instead of mutating the user's global orchestratectl installation.
+- **Bundled worker guidance now verifies the artifact CI ships (`align-green-gate`).** Worktree briefs use the locked release-mode nextest, doctest, clippy, and rustdoc gate, and workers build and invoke their worktree-local binary instead of mutating the user's global taskfleet installation.
 
 ## [0.4.0] - 2026-08-17
 
@@ -89,17 +84,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Bundled stint scheduling now uses issuectl directly (`stint-skills-issuectl-dag`).** `/stint-start` and `/stint-handoff` read lane order, dependencies, collision tokens, computed heads, and reservation-aware spawnability from `issuectl dag --json`; `TODO.md` is now handoff narrative only. The retired `AGENTS-EXECUTION-DAG.md` companion is no longer bundled or installed. Until reconciled, `doctor` reports the managed copies as orphan companions. Remove them by running `orchestratectl skill install --force` and then `orchestratectl skill install --agent codex --force`; the second command reconciles the Codex mirror.
+- **Bundled stint scheduling now uses issuectl directly (`stint-skills-issuectl-dag`).** `/stint-start` and `/stint-handoff` read lane order, dependencies, collision tokens, computed heads, and reservation-aware spawnability from `issuectl dag --json`; `TODO.md` is now handoff narrative only. The retired `AGENTS-EXECUTION-DAG.md` companion is no longer bundled or installed. Until reconciled, `doctor` reports the managed copies as orphan companions. Remove them by running `taskfleet skill install --force` and then `taskfleet skill install --agent codex --force`; the second command reconciles the Codex mirror.
 
 ## [0.3.0] - 2026-08-17
 
 ### Removed
 
-- **Dead `octl-core` plan API (`cut-plan-module`).** **Breaking:** removed the unused Plan v3 schema module and its public re-exports from `octl-core`.
+- **Dead `taskfleet-core` plan API (`cut-plan-module`).** **Breaking:** removed the unused Plan v3 schema module and its public re-exports from `taskfleet-core`.
 
 ### Added
 
-- **`config show` is now a layered, tolerant inspection surface (config schema v2) (`config-show-layered-view`).** Each key exposes the raw configured layers (file — including `[harness.per_kind]` — env, default) alongside the effective winner, with per-row validity and a `validation_error` instead of a hard exit on the invalid value the user is trying to debug; only unparseable TOML remains a hard error. File-layer validation no longer depends on whether `ORCHESTRATECTL_HARNESS` shadows it, so an invalid file value can neither kill the inspection nor hide behind env. The execution path keeps strict validation, and the `--show-secrets` warning now rides the JSON `warnings` envelope.
+- **`config show` is now a layered, tolerant inspection surface (config schema v2) (`config-show-layered-view`).** Each key exposes the raw configured layers (file — including `[harness.per_kind]` — env, default) alongside the effective winner, with per-row validity and a `validation_error` instead of a hard exit on the invalid value the user is trying to debug; only unparseable TOML remains a hard error. File-layer validation no longer depends on whether `TASKFLEET_HARNESS` shadows it, so an invalid file value can neither kill the inspection nor hide behind env. The execution path keeps strict validation, and the `--show-secrets` warning now rides the JSON `warnings` envelope.
 
 ### Changed
 
@@ -116,11 +111,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`--help --json` now uses the global JSON shorthand (`cli-canon-help-json`).** `orchestratectl --help --json` and drill-down forms such as `orchestratectl run create --json --help` emit the schema-versioned, clap-derived help envelope rather than text help, matching `--help --output json`. Supplying both output selectors remains a structured caller error.
+- **`--help --json` now uses the global JSON shorthand (`cli-canon-help-json`).** `taskfleet --help --json` and drill-down forms such as `taskfleet run create --json --help` emit the schema-versioned, clap-derived help envelope rather than text help, matching `--help --output json`. Supplying both output selectors remains a structured caller error.
 
 ### Fixed
 
-- **Bundled `octl-spawn-spinoff` guidance no longer describes the shipped spinoff surface as a preview (`spinoff-skill-stale-preview-banner`).** Removed the stale stop-gate and obsolete `not_implemented` fallback so agents invoke `run create --kind spinoff` directly.
+- **Bundled `taskfleet-spawn-spinoff` guidance no longer describes the shipped spinoff surface as a preview (`spinoff-skill-stale-preview-banner`).** Removed the stale stop-gate and obsolete `not_implemented` fallback so agents invoke `run create --kind spinoff` directly.
 - **`skill install --force` now replaces dangling symlink destinations (`skill-install-force-symlink`).** Install preflight uses non-following metadata, so a broken link is treated as an existing destination and atomically replaced instead of failing during creation.
 - **Interrupted headless spinoff creation no longer publishes a stillborn run (`pi-spinoff-batch`).** `run create` now stages the prompt and durable projections outside the public run tree while `create.sh` blocks on workmux, tmux, and harness startup. It atomically publishes only after a live worker PID and `node.created` are durable, so a client timeout under a concurrent Pi batch cannot leave a successful-looking `pending` manifest with zero nodes. The parent-child event and idempotency commit point follow publication; private interrupted staging state remains available for diagnosis.
 - **Tmux stub tests no longer intermittently fail with `ETXTBSY` on Linux (`tmux-stub-etxtbsy-flake`).** The fake executable is now synced and closed before it is made executable and spawned.
@@ -129,7 +124,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **A worker's terminal report is now readable without knowing the projection's field names (`spinoff-report-fields-null`).** Four separate bug reports claimed spinoff reports persisted as `null`; every one of them was a read-surface error, not data loss — the node projection's field is `last_report` (not `report`), and `run wait` emits `data.runs[]` (it can wait on several runs) while `run show` emits `data.<field>`, so `.data.status` and `.report.summary` correctly returned `null` on payloads that never carried them. The reports were intact in all four verified runs. `node show` now also exposes the terminal report as `data.report` alongside the unchanged `last_report`, and `run show` exposes it for single-worker runs (intentionally `null` for fan-out and other multi-node runs, where each worker is read with `node show`). The load-bearing half of the fix is documentation: the bundled skills taught agents how to *write* a report and never how to *read one back*, so `octl-run-overview`, `worktree-spinoff`, `stint-start`, `stint-handoff`, and `fan-out` now carry the read-back guidance, the `run wait` / `run show` envelope difference, and a working `jq` probe. Additive throughout — no field renamed, no envelope reshaped.
+- **A worker's terminal report is now readable without knowing the projection's field names (`spinoff-report-fields-null`).** Four separate bug reports claimed spinoff reports persisted as `null`; every one of them was a read-surface error, not data loss — the node projection's field is `last_report` (not `report`), and `run wait` emits `data.runs[]` (it can wait on several runs) while `run show` emits `data.<field>`, so `.data.status` and `.report.summary` correctly returned `null` on payloads that never carried them. The reports were intact in all four verified runs. `node show` now also exposes the terminal report as `data.report` alongside the unchanged `last_report`, and `run show` exposes it for single-worker runs (intentionally `null` for fan-out and other multi-node runs, where each worker is read with `node show`). The load-bearing half of the fix is documentation: the bundled skills taught agents how to *write* a report and never how to *read one back*, so `taskfleet-run-overview`, `worktree-spinoff`, `stint-start`, `stint-handoff`, and `fan-out` now carry the read-back guidance, the `run wait` / `run show` envelope difference, and a working `jq` probe. Additive throughout — no field renamed, no envelope reshaped.
 - **`version` advertises the schema versions it supports, and `--json` is a global shorthand (`cli-canon-version-schemas`).** Closes AGENTS-AI-FIRST-CLI §10: the `version` payload now carries named envelope, state, config, help, and skill schema support derived from the real schema constants rather than a hardcoded literal that can rot, so an agent can detect drift instead of guessing. `--json` is accepted globally (previously `version` took only `--output json`), with `--output` resolved after parsing so a conflict between the two selectors is detected at any argument position.
 
 ### Fixed
@@ -154,11 +149,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Teardown safety hardening for non-merge outcomes.** Non-explicit-merge teardown now fails closed when it cannot prove cleanup is safe: dirty worktrees are preserved, git errors preserve instead of remove, detached-HEAD / stale-branch / no-branch worktrees with unique committed work are preserved, and source-relative branch checks are no longer the only guard. This closes the review-found data-loss edges introduced by relying on committed-branch reachability alone.
 - **Run-report provenance and rollup correctness.** New `ReportOrigin` provenance distinguishes Agent, Supervisor, and RunMerge-authored reports. Outcome classification, reducer merge adoption, and the landed/report-marker fallback now trust typed `RunMerge` origin and only honor legacy `via` markers when the origin field is genuinely absent, keeping old runs readable while preventing forged merge markers. Supervisor run rollup is now log-authoritative for leaf nodes rather than projection-scan based, so a crash-interrupted node projection cannot make the run terminalize while a log-visible node is still live.
 - **Bundled skill install guard for pi.dev.** The `stint-start` and `stint-handoff` bundled skill descriptions are trimmed below pi.dev's 1024-character description limit while keeping their Finnish/English trigger phrases and disambiguators, and a unit test now rejects any bundled skill description over that limit.
-- **`config` noun — inspect the config file path and effective resolved config with per-key source (`config-subcommand`).** Follow-up to `run-create-harness-flag` (which introduced `~/.orchestratectl/config.toml` `[harness]` but no inspection surface). Two read-only verbs per AGENTS-AI-FIRST-CLI §8: `orchestratectl config path` prints the config file location (with `exists`, whether or not the file is present — so a caller never has to guess where to write settings), and `orchestratectl config show` prints the effective resolved configuration as per-key rows — `harness.default` plus one `harness.<kind>` per creatable run kind — each carrying its `source` (`env | file | default`) so an agent can reason about **why** a value is what it is. The harness rows reuse the existing `harness::select` precedence resolver verbatim (per-kind override → section default → built-in), so `config show` never re-implements resolution; an `ORCHESTRATECTL_HARNESS` override honestly shadows every row to `source: "env"`. Each row carries a `secret` flag and the §8 redaction contract (`--show-secrets` to reveal, warning on stderr) is wired for future secret-valued keys, though none exist today. Strict validation: a bad harness value in the file fails the command loudly (`invalid_harness`) rather than being silently laundered. Both verbs support `--output json|jsonl|text`; the payloads carry `schema_version_config`. Never mutates the config file.
-- **`run merge --report-file` no longer blocks a clean merge on a malformed *advisory* report field (`merge-report-schema-lenience`).** The terminal §7.3 report was validated strictly *before* the git merge, so an advisory-field typo (the recurring `title`/`detail` instead of `spinoff_proposals[].proposed_title`/`proposed_kind`/`rationale`) rejected the whole report and blocked the merge of already-committed, reviewed code. `run merge` now validates leniently: the required, correctness-bearing fields (`success`, the `cancelled`/`reason` §7.7 cross-constraints, root-object shape) stay **strict** — a violation there still returns `schema_violation` (now carrying its structured `expected` hint) and performs no merge — but the advisory sections (`summary`, `discussion_items`, `spinoff_proposals`, `wrap_up_recommendations`) **degrade gracefully**: a malformed element is dropped from the persisted report and surfaced as a machine-readable `report_advisory_warnings[]` entry (plus a human-readable `warnings` line), never a merge blocker. Also visible under `--dry-run`, which doubles as a report-file preflight. Merge authorization/provenance is unchanged — `run merge` stamps the authoritative `ReportOrigin::RunMerge` after validation; `node report` and merge-recovery keep strict validation. (New `octl_core::sanitize_report_advisory`; 3-model `/llm-review` + `/assess-findings` applied.)
-- **Thin supervisor A5 follow-up — per-node branch-preserving `run cancel --node` for fan-out (`per-node-run`).** `orchestratectl run cancel <run-id> --node <node-id>` cancels exactly ONE live node of a multi-node fan-out — for unblocking a single stuck child without killing the batch (design §2.5). It appends only that node's terminal cancel `node.report` and **no** `run.status`: the run stays live while its siblings run, and the supervisor's rollup terminalizes the batch (`done | failed | cancelled`) only once every node has settled. The cancelled node classifies as `TerminalOutcome::Cancelled` → `Teardown::SourceRelative`, so its branch + worktree are preserved (invariant 5) — never force-deleted. The node set is resolved log-authoritatively (a node whose projection write was crash-interrupted is still cancellable; an absent id is a `node_not_found` user error), and the operation is idempotent: a duplicate per-node cancel converges/no-ops without a second report. The supervisor rollup now returns `cancelled` (not `failed`) when every terminal node was cancelled and none failed. The whole-run `run cancel <run-id>` form is unchanged. (design.md §2.5/§2.6.)
-- **Thin supervisor — explicit `--interactive` how-run flag (`interactive-flag`).** `orchestratectl run create --interactive` marks a run **human-driven** and persists it as explicit `lifecycle: interactive` how-run state (on `run.created` → the manifest, surfaced on `run show` and every `run list` row). Interactivity is now orthogonal to `--kind` — any topology can be interactive — replacing the kind-derived `Lifecycle::Interactive` inference the removed `code` kind used to carry (`Kind::lifecycle` now only *seeds the default*, never infers interactivity). Supervisor semantics match design §6: for an interactive run the watchdog is hands-off — it **never** auto-terminalizes or auto-tears-down from a dead pid, a told `worker.exited` failure, or the crash backstop; it waits for an explicit `run merge` (→ teardown) or `run cancel`, so the human owns the whole lifecycle. Autonomous fire-and-forget spinoffs are unchanged (the flag is opt-in; a default `run create` is byte-identical to before) and bundled spawn skills stay headless + autonomous unless `--interactive` is explicitly requested. (design.md §2/§6.)
-- **Thin supervisor A3 — `run salvage`, the fenced manual resume/finish (`run-salvage-command`).** A new `orchestratectl run salvage <run-id>` finishes a stuck single-worker run: an *attention-required* run (worker exited cleanly but skipped `run merge`) or a `failed`/blocked run whose branch the teardown gate preserved. It snapshots manifest + `n-0001` under the run lock, then refuses the cases it must not touch (already-`done`/`cancelled`, multi-node, no preserved worktree/branch, a never-started `Pending` run, and a live worker it cannot verify). It classifies the prior worker from durable facts — a live pid whose start-time identity positively matches **overrides** a stale `worker.exited` told fact — and fences a verified-live worker with `SIGTERM` only behind the explicit `--fence` flag (identity is re-verified immediately before the signal, so a recycled pid is never hit). It then drives the **exact `run merge` machinery** (crash-recovery, CAS-guarded source fast-forward, `via: "explicit-merge"` terminal report, supervisor teardown) from the preserved worktree's current git state — never a raw git self-merge — so terminal report/provenance and every state-integrity invariant hold. A `--dry-run` merge preflight validates `--source`/`--report-file` before any fence. `--dry-run` previews the plan without mutating anything. The attention-required resume hint (`run list`/`run show`/`run wait`) now points at `run salvage`. Bounded 0.2 residuals (parent-only process fence, non-atomic fence→merge, concurrent salvage) are the design's deferred 0.2.1 writer-lease work (§2.7); the fresh-agent continuation variant and per-node fan-out salvage are tracked in `run-salvage-fresh`. (design.md §2.2 / A3; 4-model `/llm-review` + `/assess-findings`.)
+- **`config` noun — inspect the config file path and effective resolved config with per-key source (`config-subcommand`).** Follow-up to `run-create-harness-flag` (which introduced `~/.taskfleet/config.toml` `[harness]` but no inspection surface). Two read-only verbs per AGENTS-AI-FIRST-CLI §8: `taskfleet config path` prints the config file location (with `exists`, whether or not the file is present — so a caller never has to guess where to write settings), and `taskfleet config show` prints the effective resolved configuration as per-key rows — `harness.default` plus one `harness.<kind>` per creatable run kind — each carrying its `source` (`env | file | default`) so an agent can reason about **why** a value is what it is. The harness rows reuse the existing `harness::select` precedence resolver verbatim (per-kind override → section default → built-in), so `config show` never re-implements resolution; an `TASKFLEET_HARNESS` override honestly shadows every row to `source: "env"`. Each row carries a `secret` flag and the §8 redaction contract (`--show-secrets` to reveal, warning on stderr) is wired for future secret-valued keys, though none exist today. Strict validation: a bad harness value in the file fails the command loudly (`invalid_harness`) rather than being silently laundered. Both verbs support `--output json|jsonl|text`; the payloads carry `schema_version_config`. Never mutates the config file.
+- **`run merge --report-file` no longer blocks a clean merge on a malformed *advisory* report field (`merge-report-schema-lenience`).** The terminal §7.3 report was validated strictly *before* the git merge, so an advisory-field typo (the recurring `title`/`detail` instead of `spinoff_proposals[].proposed_title`/`proposed_kind`/`rationale`) rejected the whole report and blocked the merge of already-committed, reviewed code. `run merge` now validates leniently: the required, correctness-bearing fields (`success`, the `cancelled`/`reason` §7.7 cross-constraints, root-object shape) stay **strict** — a violation there still returns `schema_violation` (now carrying its structured `expected` hint) and performs no merge — but the advisory sections (`summary`, `discussion_items`, `spinoff_proposals`, `wrap_up_recommendations`) **degrade gracefully**: a malformed element is dropped from the persisted report and surfaced as a machine-readable `report_advisory_warnings[]` entry (plus a human-readable `warnings` line), never a merge blocker. Also visible under `--dry-run`, which doubles as a report-file preflight. Merge authorization/provenance is unchanged — `run merge` stamps the authoritative `ReportOrigin::RunMerge` after validation; `node report` and merge-recovery keep strict validation. (New `taskfleet_core::sanitize_report_advisory`; 3-model `/llm-review` + `/assess-findings` applied.)
+- **Thin supervisor A5 follow-up — per-node branch-preserving `run cancel --node` for fan-out (`per-node-run`).** `taskfleet run cancel <run-id> --node <node-id>` cancels exactly ONE live node of a multi-node fan-out — for unblocking a single stuck child without killing the batch (design §2.5). It appends only that node's terminal cancel `node.report` and **no** `run.status`: the run stays live while its siblings run, and the supervisor's rollup terminalizes the batch (`done | failed | cancelled`) only once every node has settled. The cancelled node classifies as `TerminalOutcome::Cancelled` → `Teardown::SourceRelative`, so its branch + worktree are preserved (invariant 5) — never force-deleted. The node set is resolved log-authoritatively (a node whose projection write was crash-interrupted is still cancellable; an absent id is a `node_not_found` user error), and the operation is idempotent: a duplicate per-node cancel converges/no-ops without a second report. The supervisor rollup now returns `cancelled` (not `failed`) when every terminal node was cancelled and none failed. The whole-run `run cancel <run-id>` form is unchanged. (design.md §2.5/§2.6.)
+- **Thin supervisor — explicit `--interactive` how-run flag (`interactive-flag`).** `taskfleet run create --interactive` marks a run **human-driven** and persists it as explicit `lifecycle: interactive` how-run state (on `run.created` → the manifest, surfaced on `run show` and every `run list` row). Interactivity is now orthogonal to `--kind` — any topology can be interactive — replacing the kind-derived `Lifecycle::Interactive` inference the removed `code` kind used to carry (`Kind::lifecycle` now only *seeds the default*, never infers interactivity). Supervisor semantics match design §6: for an interactive run the watchdog is hands-off — it **never** auto-terminalizes or auto-tears-down from a dead pid, a told `worker.exited` failure, or the crash backstop; it waits for an explicit `run merge` (→ teardown) or `run cancel`, so the human owns the whole lifecycle. Autonomous fire-and-forget spinoffs are unchanged (the flag is opt-in; a default `run create` is byte-identical to before) and bundled spawn skills stay headless + autonomous unless `--interactive` is explicitly requested. (design.md §2/§6.)
+- **Thin supervisor A3 — `run salvage`, the fenced manual resume/finish (`run-salvage-command`).** A new `taskfleet run salvage <run-id>` finishes a stuck single-worker run: an *attention-required* run (worker exited cleanly but skipped `run merge`) or a `failed`/blocked run whose branch the teardown gate preserved. It snapshots manifest + `n-0001` under the run lock, then refuses the cases it must not touch (already-`done`/`cancelled`, multi-node, no preserved worktree/branch, a never-started `Pending` run, and a live worker it cannot verify). It classifies the prior worker from durable facts — a live pid whose start-time identity positively matches **overrides** a stale `worker.exited` told fact — and fences a verified-live worker with `SIGTERM` only behind the explicit `--fence` flag (identity is re-verified immediately before the signal, so a recycled pid is never hit). It then drives the **exact `run merge` machinery** (crash-recovery, CAS-guarded source fast-forward, `via: "explicit-merge"` terminal report, supervisor teardown) from the preserved worktree's current git state — never a raw git self-merge — so terminal report/provenance and every state-integrity invariant hold. A `--dry-run` merge preflight validates `--source`/`--report-file` before any fence. `--dry-run` previews the plan without mutating anything. The attention-required resume hint (`run list`/`run show`/`run wait`) now points at `run salvage`. Bounded 0.2 residuals (parent-only process fence, non-atomic fence→merge, concurrent salvage) are the design's deferred 0.2.1 writer-lease work (§2.7); the fresh-agent continuation variant and per-node fan-out salvage are tracked in `run-salvage-fresh`. (design.md §2.2 / A3; 4-model `/llm-review` + `/assess-findings`.)
 - **Thin supervisor A2 — deterministic, OID-based recovery for crashed `run merge` transactions (`merge-transaction-recovery`).** `run merge` spans two durability domains (git refs and the event log) and is not atomic across them; a crash after the git merge but before the terminal `explicit-merge` `node.report` used to leave the work *merged in source* with *no merge event* → a false `failed`. `run merge` now records a `merge.started` transaction (`op_id`, `expected_source_oid`, `worker_oid`, source/worker branch, driver pid) on `Node.pending_merge` **before** mutating git, and merge.sh guards the source-ref fast-forward with a compare-and-swap against `expected_source_oid` (refuses with a distinct `merge_source_moved` code if the target moved). On the next `run merge` (self-healing retry) or supervisor tick, recovery resolves that **one** recorded transaction by exact OID — completing it (appending the `explicit-merge` report the crash prevented) when the source ref moved and the worker's content is git-verified integrated, or rejecting it (`merge.aborted`, work preserved) when the source ref never moved or moved without the worker's content. No general branch-content heuristic; gated on the driver being dead so a live merge is never raced. (design.md §2.1b.)
 - **CI guard: version snapshots must match the crate version (`release-version-snapshot-refresh`).** `scripts/check-version-snapshots.sh` fails loudly when the `version_*` insta snapshots drift from `[workspace.package] version`, wired as a fast dependency-free `version-snapshots` CI job — so a version bump can no longer silently leave stale snapshots and turn `main` red after the release tag is cut (as happened for v0.1.8). The release mechanics doc now names the snapshot-refresh step.
 
@@ -185,7 +180,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`run create --harness <name>` selects the worker's code harness (`run-create-harness-flag`).** The existing `CodeHarness` seam (adapters `aider`, `claude`, `claude-deepseek`, `pi`) — previously reachable only via `harness bakeoff` — is now wired into the real worker-launch path for every run kind. Resolution follows flag > env (`ORCHESTRATECTL_HARNESS`) > config file > built-in default (`claude`), with a per-kind default so autonomous kinds (`spinoff`/`research`) can default to **pi.dev** while interactive `code` stays on Claude. The chosen harness is surfaced in `run show` / `run list --json` and the event log, and the supervisor preserves it across a retry. Claude remains the default.
+- **`run create --harness <name>` selects the worker's code harness (`run-create-harness-flag`).** The existing `CodeHarness` seam (adapters `aider`, `claude`, `claude-deepseek`, `pi`) — previously reachable only via `harness bakeoff` — is now wired into the real worker-launch path for every run kind. Resolution follows flag > env (`TASKFLEET_HARNESS`) > config file > built-in default (`claude`), with a per-kind default so autonomous kinds (`spinoff`/`research`) can default to **pi.dev** while interactive `code` stays on Claude. The chosen harness is surfaced in `run show` / `run list --json` and the event log, and the supervisor preserves it across a retry. Claude remains the default.
 - **`skill install` dual-homes skills into pi.dev's skill dir (`pidev-dual-home-skills`).** Each skill's `SKILL.md` is now installed into `~/.pi/agent/skills/<name>/` in addition to `~/.claude/skills/<name>/`, so the CLI's bundled skills are discoverable under the pi.dev harness (`/skill:name`). Vendored-filtering-aware (only `SKILL.md` is mirrored into the pi target); the Claude Code install path is byte-for-byte unchanged, and the pi mirror is decoupled from the all-or-nothing preflight so it can never block a Claude install.
 - **Companion resources install for the codex flat layout (`skill-companion-codex-layout`).** Companion files install into the shared `~/.codex/prompts/_shared/` subdir with per-skill link rewrites; the claude layout is provably byte-for-byte unchanged.
 - **`doctor` detects and `prune` removes orphan companion files (`doctor-orphan-companion-files`).** A companion resource a prior binary installed but the current binary no longer bundles is now surfaced as a distinct `skill.orphan.*` diagnostic (not conflated with missing/out-of-sync) and can be pruned.
@@ -219,7 +214,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- **Addressed RUSTSEC-2026-0009 without dropping the 1.85 MSRV (`ci-red-main-deny-docs`, `dry-run-projection-parity-flake`).** The `time` crate's stack-exhaustion DoS advisory (fixed only in `time ≥0.3.47`, which requires rustc 1.88 — above our 1.85 floor) is a transitive dependency via `tracing-appender`, used solely for log-file-rotation timestamps; we never parse untrusted time input, so the advisory is not exploitable here. Resolved by pinning `time` to `0.3.41` (keeping MSRV 1.85) plus a scoped, time-boxed `deny.toml` ignore documenting the rationale, and repaired the `octl-core`/`octl-cli` intra-doc links that had left CI red.
+- **Addressed RUSTSEC-2026-0009 without dropping the 1.85 MSRV (`ci-red-main-deny-docs`, `dry-run-projection-parity-flake`).** The `time` crate's stack-exhaustion DoS advisory (fixed only in `time ≥0.3.47`, which requires rustc 1.88 — above our 1.85 floor) is a transitive dependency via `tracing-appender`, used solely for log-file-rotation timestamps; we never parse untrusted time input, so the advisory is not exploitable here. Resolved by pinning `time` to `0.3.41` (keeping MSRV 1.85) plus a scoped, time-boxed `deny.toml` ignore documenting the rationale, and repaired the `taskfleet-core`/`taskfleet-cli` intra-doc links that had left CI red.
 
 ## [0.1.3] - 2026-08-06
 
@@ -259,8 +254,8 @@ coherent cut across all three channels since 0.1.1.
 
 ## [0.1.0] - 2026-08-04
 
-First public release — published to crates.io (`orchestratectl`, `octl-core`) and
-installable via Homebrew (`brew install jarimustonen/orchestratectl/orchestratectl`).
+First public release — published to crates.io (`taskfleet`, `taskfleet-core`) and
+installable via Homebrew (`brew install jarimustonen/taskfleet/taskfleet`).
 The first publishable cut: the CLI is real, the bundled skill family covers the full
 agent loop, and run state survives crashes via an append-only event log + lock-gated
 reducer. Groups the MVP foundation with the code-pipeline / harness work (mostly
@@ -269,12 +264,12 @@ behind-the-seam) that landed before the release.
 ### Fixed — code pipeline
 
 - **`pipeline run` spec/verify: parse the model's `type:result` message, not the `type:system` init banner (`pipeline-claude-output-parse`).** `claude -p --output-format json` (Claude Code ≥ 2.1.211) emits a *sequence* of JSON messages — an init banner first, then the answer — so reading `.result` off the whole output failed and the raw-transcript fallback fed the init banner into the plan parser, making every live spec fail `missing field acceptance`. `run_claude` now parses the transcript with a streaming deserializer (tolerant of a top-level array, NDJSON, concatenated `{…}{…}`, and pretty-printed multi-line objects) and selects the last `type == "result"` message's `.result`. The raw-transcript fallback is now narrow — it fires only when NO Claude envelope was recognized; a recognized envelope with no usable result returns empty so the caller fails loudly rather than silently mis-parsing the banner. Fixes both spec and verify in the shared path.
-- **`pipeline run` spec stage: schema-complete plan prompt + validation-error repair loop (`pipeline-spec-plan-conformance`).** The first live run failed at spec with `plan invalid: … missing field 'acceptance'` and the retry reproduced the same error because it re-prompted blind. The spec prompt now states which `plan.json` fields are REQUIRED (derived from the `octl_core::plan` types so it can't drift) and that `acceptance` must carry ≥1 executable `{desc,run}` check; on a validation failure the driver now runs a bounded **repair loop** that feeds the exact validator error and the invalid JSON back to the model to correct precisely that error. The parse stays strict (no silent server-side patching); on exhaustion the last raw invalid plan is persisted to `<workdir>/plan.invalid.json` and the error surfaces the last validator message.
+- **`pipeline run` spec stage: schema-complete plan prompt + validation-error repair loop (`pipeline-spec-plan-conformance`).** The first live run failed at spec with `plan invalid: … missing field 'acceptance'` and the retry reproduced the same error because it re-prompted blind. The spec prompt now states which `plan.json` fields are REQUIRED (derived from the `taskfleet_core::plan` types so it can't drift) and that `acceptance` must carry ≥1 executable `{desc,run}` check; on a validation failure the driver now runs a bounded **repair loop** that feeds the exact validator error and the invalid JSON back to the model to correct precisely that error. The parse stays strict (no silent server-side patching); on exhaustion the last raw invalid plan is persisted to `<workdir>/plan.invalid.json` and the error surfaces the last validator message.
 
 ### Added — code pipeline, harness bake-off & completion hook
 
 - **`pipeline run`: the first live end-to-end code pipeline (`pipeline-walking-skeleton`, T5).**
-  A new ADDITIVE command `orchestratectl pipeline run --intent <str|file>
+  A new ADDITIVE command `taskfleet pipeline run --intent <str|file>
   --source-branch <branch> [--files <f>…] [--slug …] [--repo …] [--workdir …]
   [--keep]` drives one feature through the whole loop (design §6):
   **spec[Opus] → code[claude-deepseek] → floor-gate → verify[Opus] → merge**. It
@@ -290,7 +285,7 @@ behind-the-seam) that landed before the release.
   it invokes the real agents and really merges, but it does NOT touch `run create`
   / the supervisor. The orchestration loop is unit-tested with a stub harness +
   scripted spec/verify against a real throwaway git repo (no network); the one
-  live end-to-end test is gated behind `OCTL_PIPELINE_LIVE=1`. The fix loop,
+  live end-to-end test is gated behind `TASKFLEET_PIPELINE_LIVE=1`. The fix loop,
   re-spec, tier promotion, cost/circuit-breakers, and parallel chunks are deferred
   to filed follow-ups.
 
@@ -302,22 +297,22 @@ behind-the-seam) that landed before the release.
   (earendil-works/pi) — sharing one launch+git-outcome skeleton
   (`harness::support`) so they map an agent's *git* result (commit, changed files,
   self-checks) to a `ChunkResult`, never parsing tool prose. The new
-  `orchestratectl harness bakeoff --brief <file> [--files <f>…] [--only <names>]
+  `taskfleet harness bakeoff --brief <file> [--files <f>…] [--only <names>]
   [--timeout <secs>]` command runs one brief through every *available* adapter in
   isolated throwaway git repos and prints a one-row-per-harness comparison
   (outcome / files-changed / +lines-/-lines / wall-time / cost / checks-pass) as a
   text table or, under `--output json`, a `{brief_file, selected, adapters[]}`
   envelope. It invokes the real agents (bold-to-live); adapters whose binary or
   credential is absent are reported as `unavailable`, not errored. Live agent
-  tests are gated behind `OCTL_HARNESS_LIVE=1`; the deterministic conformance
+  tests are gated behind `TASKFLEET_HARNESS_LIVE=1`; the deterministic conformance
   suite drives each adapter through fixture scripts with no network.
 
 - **`run create --notify <cmd>` completion hook (`no-completion-notification-to-parent`).**
   A run created with `--notify <cmd>` now runs that command when the run reaches a
   terminal state (`done | failed | cancelled`), fired by the supervisor on the
   terminal transition **before** teardown removes the worktree/window. The command
-  runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`, `OCTL_SUMMARY`,
-  `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its environment — the push signal a
+  runs via `sh -c` with `TASKFLEET_RUN_ID`, `TASKFLEET_STATUS`, `TASKFLEET_SUMMARY`,
+  `TASKFLEET_RUN_KIND`, and `TASKFLEET_RUN_TITLE` in its environment — the push signal a
   spawning session needs to learn of completion without polling (append a line to a
   file the harness watches, post a desktop toast, ping a FIFO). Delivery is
   **at-least-once**: firing is deduped on a durable `run.notified` marker (idempotency
@@ -349,7 +344,7 @@ behind-the-seam) that landed before the release.
   (exit 0 = pass).
 
 - **Inverted control loop scaffold (code-pipeline T4, behind the seam).** A new
-  module (`crates/octl-cli/src/pipeline/`) modelling the design §2 inversion: the
+  module (`crates/taskfleet-cli/src/pipeline/`) modelling the design §2 inversion: the
   supervisor owns the loop and the orchestrator is a stateless pure function
   returning discrete typed `Action` primitives (`ReCodeChunk`, `TriggerReSpec`,
   `AcceptChunk`, `PromoteTier`, `OpenDiscussion`, `ProposeSpinoff`,
@@ -381,11 +376,11 @@ behind-the-seam) that landed before the release.
   `SlowUntilCancel` behaviour so the conformance suite tests both deterministically
   with no network. Unblocks live wiring (T5).
 - **Deterministic correctness floor (code-pipeline T3, behind the seam).** A
-  standalone module (`crates/octl-cli/src/floor/`) of pure gate functions plus a
+  standalone module (`crates/taskfleet-cli/src/floor/`) of pure gate functions plus a
   thin capture layer implementing the mechanical merge floor (design §4): a
   serde `BaselineSnapshot` captured at the `feat/<slug>` fork (test pass-list +
   clippy-warning-list hashes projecting down to `plan::Baseline`, optional
-  coverage), a check runner over `octl_core::plan::Check`, and five pure gates —
+  coverage), a check runner over `taskfleet_core::plan::Check`, and five pure gates —
   checks-pass, no-regression (no baseline-passing test now fails), no-new-clippy,
   no-test-gaming (count/ignore/rename/assertion-density), and file-scope
   (`files_touched[]` + slack) — returning a structured `FloorVerdict` of
@@ -393,7 +388,7 @@ behind-the-seam) that landed before the release.
   git repos, no network. Unused by default — not wired into any live
   `run merge`/supervisor path; staged rollout (design §14) plugs it into the
   supervisor merge gate at T5.
-- **`plan.json` v2 schema + validator (`octl_core::plan`).** Serde types for the
+- **`plan.json` v2 schema + validator (`taskfleet_core::plan`).** Serde types for the
   code-pipeline stage contract (`schema_version`, immutable `plan_rev`,
   `intent_rev`, `feature`, `baseline`, `acceptance[]` checks/assertions, and the
   `chunks[]` DAG) plus a structural validator that rejects unsupported schema
@@ -401,12 +396,12 @@ behind-the-seam) that landed before the release.
   check per chunk and in `acceptance[]`, and safe repo-relative `files_touched`
   paths — with domain-typed `PlanValidationError`s the CLI can map to its
   `schema_violation` envelope. A checked-in Draft 2020-12 JSON Schema
-  (`crates/octl-core/schemas/plan.v2.schema.json`) is the machine-readable
+  (`crates/taskfleet-core/schemas/plan.v2.schema.json`) is the machine-readable
   artifact, kept in sync with the Rust types by a drift-guard golden test. Read-
   only types + validation only — not yet wired into a live path (design.md §4/§7/
   §13, `issues/code-pipeline/plan-schema.md`).
 - **`CodeHarness` adapter contract (code-pipeline T0, behind the seam).** A
-  versioned, harness-neutral trait (`crates/octl-cli/src/harness/`) that lets the
+  versioned, harness-neutral trait (`crates/taskfleet-cli/src/harness/`) that lets the
   supervisor drive a code-writing agent over one chunk and consume a structured
   `ChunkResult` — never tool prose or exit-status guessing (design §10). Ships the
   request/result protocol (`ChunkRequest`, `ChunkResult`, `ChunkOutcome`, `Check`,
@@ -439,13 +434,13 @@ behind-the-seam) that landed before the release.
 
 ### Added — MVP foundation
 
-- **Run model.** Every spawn is a `run` (`~/.orchestratectl/runs/<ulid>/`)
+- **Run model.** Every spawn is a `run` (`~/.taskfleet/runs/<ulid>/`)
   with `events.jsonl` as the canonical source of truth and
   `manifest.json` / `nodes/` / `discussions/` / `spinoffs/` as
   projections reduced under a single per-run flock.
 - **Run create kinds.** `code`, `spinoff`, `orchestrated`, `research`,
   `bugfix`, `technical-decision`, `make-skill`, `fan-out`, `orchestrate`.
-- **Run merge.** `orchestratectl run merge <run-id> [--report-file]`
+- **Run merge.** `taskfleet run merge <run-id> [--report-file]`
   rebases + merges the worktree branch and submits the terminal node
   report in one call; supervisor tears down worktree + tmux window +
   branch automatically.
@@ -453,21 +448,21 @@ behind-the-seam) that landed before the release.
   (no false watchdog misfires), terminal cleanup on `node.report`,
   detached-PTY support via `--headless` / `--tmux-session`.
 - **Skill bundling.** 13 Claude Code skills bundled in the binary and
-  deployed via `orchestratectl skill install --force`:
-  `orchestratectl-overview`, `octl-run-overview`, `octl-spawn-spinoff`,
+  deployed via `taskfleet skill install --force`:
+  `taskfleet-overview`, `taskfleet-run-overview`, `taskfleet-spawn-spinoff`,
   `worktree-code`, `worktree-spinoff`, `worktree-merge`,
   `worktree-research`, `worktree-bugfix`, `worktree-technical-decision`,
   `worktree-make-skill`, `worktree-orchestrated`, `fan-out`,
   `orchestrate`. SKILL examples are CI-gated against the actual binary
   CLI surface.
-- **Doctor.** `orchestratectl doctor` reports schema, install, and
+- **Doctor.** `taskfleet doctor` reports schema, install, and
   skill-sync health (current: 63 ok / 0 fail).
 - **AI-first CLI.** Every command follows the conventions in
   `AGENTS-AI-FIRST-CLI.md` (`--json` everywhere, JSONL logs, strict
   input validation, informative error envelopes, no interactive prompts).
 - **`run create --agent-startup-timeout <seconds>`** (1–600, default 90).
   Forwarded to `create.sh`; higher than create.sh's own 30s default
-  because octl batch-spawns self-load the host and a fresh agent can miss
+  because taskfleet batch-spawns self-load the host and a fresh agent can miss
   a 30s window under load. Closes `run-create-agent-startup-timeout`.
 - **Supervisor liveness surface.** `run show` / `run list` report
   `supervisor: {pid, alive}` (orphan detection), and `run merge` returns a
@@ -523,7 +518,7 @@ behind-the-seam) that landed before the release.
   force-delete is reserved for a confirmed `run merge`
   (`via: "explicit-merge"`).
 - `supervise_gates` + `e2e_spinoff` test binaries serialize on a process-
-  wide file lock (`/tmp/octl-test-supervise.lock` via `serial_test`'s
+  wide file lock (`/tmp/taskfleet-test-supervise.lock` via `serial_test`'s
   `#[file_serial]`), removing a `cargo test --workspace` self-terminate
   flake. Closes `flaky-self-terminate-test`.
 

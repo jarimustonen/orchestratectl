@@ -1,6 +1,0 @@
-{
-  "origin": {
-    "fetch": "git@github.com:jarimustonen/taskfleet.git",
-    "push": "git@github.com:jarimustonen/taskfleet.git"
-  }
-}

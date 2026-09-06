@@ -7,14 +7,14 @@ too many subcommands ossify a choice.
 
 ## 1. Envelope `schema_version` constant location
 
-Today the CLI envelope schema lives at `crates/octl-cli/src/error.rs::SCHEMA_VERSION`
-and the on-disk state schema lives at `crates/octl-core/src/lib.rs::STATE_SCHEMA_VERSION`.
+Today the CLI envelope schema lives at `crates/taskfleet-cli/src/error.rs::SCHEMA_VERSION`
+and the on-disk state schema lives at `crates/taskfleet-core/src/lib.rs::STATE_SCHEMA_VERSION`.
 Both are `1`. Reviewers (anthropic, openai) argued the envelope contract
-is shared by every tool that consumes orchestratectl output and
-therefore belongs in `octl-core` (or a new `octl-proto` crate) so a
+is shared by every tool that consumes taskfleet output and
+therefore belongs in `taskfleet-core` (or a new `taskfleet-proto` crate) so a
 future companion binary, daemon, or skill installer can reuse it.
 
-**Question:** Move `SCHEMA_VERSION` into `octl-core`, keep it in `octl-cli`,
+**Question:** Move `SCHEMA_VERSION` into `taskfleet-core`, keep it in `taskfleet-cli`,
 or wait for the supervisor crate split (already on the design board as
 post-MVP) and resolve then?
 
@@ -44,7 +44,7 @@ now before more callsites accumulate.
 ## 4. Workspace-wide lints policy
 
 Reviewers suggested `[workspace.lints.clippy] pedantic = "warn"` and
-`#![warn(missing_docs)]` on `octl-core/lib.rs`. This is real opinion
+`#![warn(missing_docs)]` on `taskfleet-core/lib.rs`. This is real opinion
 territory — pedantic lints catch real bugs but also annotate-heavy
 patterns. Spin-off issue `ci-and-lints` will land lints, but the policy
 (pedantic vs default+`-D warnings` vs custom subset) is your call.

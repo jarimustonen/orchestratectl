@@ -16,7 +16,7 @@ closed_by: claude
 During a real `/stint` session (2026-07-22 iltapäivä), spawning autonomous
 `--kind spinoff` runs began failing **silently at creation**:
 
-- `orchestratectl run create --kind spinoff …` **hangs and hits the caller's
+- `taskfleet run create --kind spinoff …` **hangs and hits the caller's
   2-minute timeout** (no JSON envelope returned to stdout).
 - The run **is** created (`run.created` event fires, worktree materialises,
   manifest exists, appears in `run list`).
@@ -54,14 +54,14 @@ commits, worktree untouched at its base commit for >1h. So reattach revives the
 ## Repro (observed)
 
 ```
-orchestratectl run create --kind spinoff \
+taskfleet run create --kind spinoff \
   --title "groups-first-access-v3" \
   --prompt-file <path> --source-branch main \
   --idempotency-key groups-first-access-v3-20260722
 # → hangs ~100s, no stdout JSON
-orchestratectl run show <id> --output json
+taskfleet run show <id> --output json
 # → manifest.status = pending, supervisor.alive = false, updated_at == created_at
-ls ~/.orchestratectl/runs/<id>/
+ls ~/.taskfleet/runs/<id>/
 # → NO supervisor.stderr.log; events.jsonl has only run.created
 tmux list-windows -t headless   # → no window for this run
 ```
@@ -91,7 +91,7 @@ that trusts the (never-arriving) envelope would stall.
 
 ## Environment
 
-- orchestratectl 0.1.0 (commit a54f0ff6)
+- taskfleet 0.1.0 (commit a54f0ff6)
 - macOS (Darwin 25.5.0), tmux sessions `default`/`headless`/`codetest` all healthy
 - Repo: 3dbear-monorepo, heavy parallel-session day (main moved ~19 commits under
   the stint via other sessions; many worktrees created/torn down in the session).
@@ -105,7 +105,7 @@ mid-run**; the run `01ky58bv1a…` is now `cancelled`, `node_count:0`,
 and adds a mechanism detail for suggested-fix #3:
 
 **v2 supervisor false-completed after spawning nothing.** From
-`~/.orchestratectl/runs/01ky5757w4…/`:
+`~/.taskfleet/runs/01ky5757w4…/`:
 
 - `supervisor.stderr.log`:
   `{"reason":"work-complete","iterations":1188,...}` — the reattached supervisor
@@ -113,7 +113,7 @@ and adds a mechanism detail for suggested-fix #3:
   **`work-complete`**.
 - `supervisor.state.json`: `"spawned_children": {}` — it completed with **zero
   children ever spawned**.
-- Global `orchestratectl.log.jsonl` for the v2 window shows only
+- Global `taskfleet.log.jsonl` for the v2 window shows only
   `Reattach → Supervise → supervisor started (pid 24947)` then an ~18-min gap of
   nothing, then `Cancel`. **No `CreateNode`, no spawn dispatch, no `create.sh`
   invocation is ever logged.**
@@ -195,7 +195,7 @@ supervisor just never terminalised them:
    merge step stash/clean untracked files before the rebase.
 
 7. **`run wait` is effectively unusable for a batch here — argument parsing.**
-   Passing several run-ids to `orchestratectl run wait` as documented
+   Passing several run-ids to `taskfleet run wait` as documented
    ("pass several run-ids to block until all settle") repeatedly failed with
    `invalid_run_id` when the ids arrived as a single space- or newline-separated
    argument (shell expansion / word-splitting in a non-interactive `bash -c`
@@ -220,7 +220,7 @@ start → `failed`, never stuck `pending`" would let a fan-out driver trust run
 status again.
 
 ### Environment (2026-07-24 repro)
-- orchestratectl 0.1.0 (commit a54f0ff6)
+- taskfleet 0.1.0 (commit a54f0ff6)
 - macOS (Darwin 25.5.0)
 - Repo: 3dbear-monorepo; heavy parallel-session day again; 8 fan-out children +
   2 spinoffs spawned within ~40 min, main moving under the stint via other

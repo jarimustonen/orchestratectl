@@ -30,10 +30,10 @@ is". This is the family's single most consistent miss (7/7 tools ✗ in the audi
 and `config show --json` (effective config values + their source/provenance). Non-mutating,
 `--json` envelope like the rest of the surface.
 
-**Current state (evidence):** `orchestratectl config` → unrecognized subcommand.
+**Current state (evidence):** `taskfleet config` → unrecognized subcommand.
 
 ## Comments
 
 ### 2026-08-16T17:26:55Z · @claude
 
-Closed at stint-3 Phase 1 without code: live re-verification shows the §8 gap is already closed by v0.2.0. `orchestratectl config path` and `config show` both emit the canon envelope, and `config show` carries per-key provenance (`source: file`). The issue body's 'unrecognized subcommand' evidence predates the stint-1 config-subcommand landing.
+Closed at stint-3 Phase 1 without code: live re-verification shows the §8 gap is already closed by v0.2.0. `taskfleet config path` and `config show` both emit the canon envelope, and `config show` carries per-key provenance (`source: file`). The issue body's 'unrecognized subcommand' evidence predates the stint-1 config-subcommand landing.

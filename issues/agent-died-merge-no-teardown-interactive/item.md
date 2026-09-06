@@ -19,14 +19,14 @@ _Source: supervise (watchdog liveness) + run merge teardown_
 
 **Reporter:** homebase worktree `wt/01kxv28qw5-file-bug-image-barrier` session (interactive `/worktree-code`).
 **Reported:** 2026-07-20
-**Version:** orchestratectl `0.1.0`
+**Version:** taskfleet `0.1.0`
 **Severity:** Medium — no data loss (the merge landed correctly on `main` and the worktree was *not* destroyed), but `run merge` returns a success/`terminal` envelope while the tmux window, worktree, and branch are silently left behind, and the `/worktree-merge` skill then tells the user "the window is being cleaned up automatically" — which is false.
 
 This reproduces on `0.1.0` a combination already marked **fixed** in `@supervisor-dead-merge-no-teardown`, `@false-failed-after-merge`, and `@supervisor-watchdog-misfire-on-fresh-spawn` — so it is either a regression or those fixes do not cover the **long-lived interactive** trigger. Filing fresh with a full authoritative event-log trace rather than reopening, because the end-to-end path (mid-session `agent-died` on a ~1.5-day interactive run → supervisor exit without teardown → later explicit `run merge`) spans all three and is a distinct reproduction.
 
 ## Symptom
 
-`orchestratectl run merge 01kxv28qw5v2p67synn9w2wb4c --report-file …` returned:
+`taskfleet run merge 01kxv28qw5v2p67synn9w2wb4c --report-file …` returned:
 
 ```json
 {"schema_version":1,"data":{"run_id":"01kxv28qw5v2p67synn9w2wb4c","node_id":"n-0001",
@@ -78,7 +78,7 @@ The agent was demonstrably **alive** across seq 4: it continued the session and 
 ## Reproduction
 
 1. Start an interactive `/worktree-code` run; keep it alive across a long/idle span (here ~1.5 days) until the watchdog misfires `agent-died` (seq 4) and the supervisor exits (seq 6).
-2. In the same still-alive agent, commit and run `orchestratectl run merge <run-id> --report-file …`.
+2. In the same still-alive agent, commit and run `taskfleet run merge <run-id> --report-file …`.
 3. Observe: `merged:true` + `supervisor.state:"terminal"` returned, but the tmux window, worktree, and branch survive and `run show` reads `status: failed`.
 
 ## Decisions

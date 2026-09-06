@@ -5,7 +5,7 @@
 There are **two unrelated execution models** in the tree; the issue's "route the
 worker launch through the CodeHarness adapter" conflates them:
 
-1. **`CodeHarness` / `AgentLaunch` seam** (`crates/octl-cli/src/harness/*`) — a
+1. **`CodeHarness` / `AgentLaunch` seam** (`crates/taskfleet-cli/src/harness/*`) — a
    *synchronous in-process* `run_chunk(req) -> ChunkResult` contract. Shells the
    tool blocking, reads git state, returns a structured result. Used **only** by
    `harness bakeoff` (+ the unfinished code-pipeline). It cannot BE the worker
@@ -28,7 +28,7 @@ path" is satisfied for free.
 
 1. `run create --harness <name>` (validated against the harness registry:
    `aider, claude, claude-deepseek, pi`).
-2. Precedence **flag > env `ORCHESTRATECTL_HARNESS` > config file > built-in
+2. Precedence **flag > env `TASKFLEET_HARNESS` > config file > built-in
    default (`claude`)**, with a per-kind config override (so config can default
    `research`/`spinoff` to `pi` while `code` stays `claude`). Built-in per-kind
    default is `claude` everywhere (safe rollout; claude stays default).
@@ -46,7 +46,7 @@ path" is satisfied for free.
 
 - **Skill/Agent-tool translation shim (§4).** Making a *pi* worker actually
   complete a bundled Claude-flavored SKILL workflow is an AGENTS.md-native prompt
-  translation — substantial, not an orchestratectl-code change.
+  translation — substantial, not an taskfleet-code change.
 - **`config` subcommand** (`config path`, `config show --json`) per
   AGENTS-AI-FIRST-CLI §8 — useful but its own CLI surface + snapshot suite.
 - **workmux `pi` agent preset** — `run create --harness pi` forwards `--agent pi`;
@@ -54,14 +54,14 @@ path" is satisfied for free.
 
 ## Files
 
-- new `crates/octl-cli/src/config.rs` — config file load (`~/.orchestratectl/config.toml`).
-- new `crates/octl-cli/src/harness/select.rs` — `resolve_harness`, `HarnessSource`, workmux-agent map.
+- new `crates/taskfleet-cli/src/config.rs` — config file load (`~/.taskfleet/config.toml`).
+- new `crates/taskfleet-cli/src/harness/select.rs` — `resolve_harness`, `HarnessSource`, workmux-agent map.
 - `harness/mod.rs` — `KNOWN_HARNESSES`, `DEFAULT_HARNESS`, `workmux_agent`, `pub mod select`.
 - `run/mod.rs` — `--harness` flag + dispatch.
 - `run/create.rs` — resolve, record in `run.created`, pass agent to spawn.
 - `run/spawn.rs` — `SpawnRequest.agent` + `--agent` forwarding.
-- `octl-core/schema.rs` — `Manifest.harness`.
-- `octl-core/reducer.rs` — fold `harness`.
+- `taskfleet-core/schema.rs` — `Manifest.harness`.
+- `taskfleet-core/reducer.rs` — fold `harness`.
 - `run/dto.rs` — surface harness + wire-shape tests.
 - tests + insta snapshots.
 </content>

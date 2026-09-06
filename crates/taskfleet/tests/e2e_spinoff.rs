@@ -99,7 +99,7 @@ default="e2e"
         Command::new(env!("CARGO_BIN_EXE_taskfleet"))
             .env("TASKFLEET_HOME", home.path())
             .env("HOME", home.path())
-            .env("OCTL_MERGE_SH", &merge)
+            .env("TASKFLEET_MERGE_SH", &merge)
             .args(["--output", "json", "run", "merge", run_id]),
     );
     assert_eq!(merged["data"]["merged"], true);

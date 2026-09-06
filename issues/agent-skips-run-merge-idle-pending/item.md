@@ -16,7 +16,7 @@ commits:
 closed: 2026-08-12
 ---
 
-_Source: orchestratectl technical-decision run (agent closing contract)_
+_Source: taskfleet technical-decision run (agent closing contract)_
 
 ## Description
 
@@ -29,7 +29,7 @@ _Source: orchestratectl technical-decision run (agent closing contract)_
 Distinct from the already-fixed "supervisor mislabels a **merged** run" family (`@false-failed-after-merge`, `@supervisor-stuck-pending-after-self-merge`, `@orchestrated-children-hang-pending`) — in all of those the agent **did** merge and the supervisor got the status wrong. Here the agent **never merged at all**:
 
 1. The agent did its work correctly: created the issue, wrote the ADR, and made **two clean commits on its branch** (`d2cb363` ADR + `f6b1dbb` issue-close). Worktree left clean.
-2. It then **skipped its mandatory closing step** — never called `orchestratectl run merge` (nor a direct `node report`). Instead the agent session ended / dropped back to an **idle shell prompt** inside the worktree.
+2. It then **skipped its mandatory closing step** — never called `taskfleet run merge` (nor a direct `node report`). Instead the agent session ended / dropped back to an **idle shell prompt** inside the worktree.
 3. Result: branch `wt/01kyeadrss-adr-groupware-calendar` **not merged** into `main` (`git merge-base --is-ancestor` → false), `node show` → `status: pending`, `last_report: null`, `run show` → `status: pending`, supervisor `alive: true`.
 
 The agent process was **not classified dead** — `ps -p <agent_pid>` still showed the `claude …` process alive (`S+`, ~80 min elapsed) while the tmux pane showed only the zsh prompt. So this is not the "agent-died during terminal phase" path; it is the agent **reaching a normal end-of-session without honoring the `run merge` closing contract**, and the supervisor having no fallback to detect "work committed + branch mergeable + no terminal report → the agent is done but skipped its close."
@@ -45,8 +45,8 @@ $ git merge-base --is-ancestor wt/01kyeadrss-adr-groupware-calendar main; echo $
 1   # NOT merged
 
 # run/node both pending, no report
-$ orchestratectl run show 01kyeadrsscmx1zrt0g58tv4k9   → status: pending, supervisor alive
-$ orchestratectl node show … n-0001                    → status: pending, last_report: null
+$ taskfleet run show 01kyeadrsscmx1zrt0g58tv4k9   → status: pending, supervisor alive
+$ taskfleet node show … n-0001                    → status: pending, last_report: null
 
 # agent process still alive, but pane is an idle shell
 $ ps -p 12591 -o stat,etime  → S+  01:21:19
@@ -58,7 +58,7 @@ $ tmux capture-pane …        → "➜ wt-01kyeadrss-… git:(wt/…)"   (just 
 The conductor verified the two commits were genuinely complete on the branch, then finished the landing itself:
 
 ```
-orchestratectl run merge 01kyeadrsscmx1zrt0g58tv4k9 --report-file <hand-authored §7.3 report>
+taskfleet run merge 01kyeadrsscmx1zrt0g58tv4k9 --report-file <hand-authored §7.3 report>
 → merged: true, report_seq: 4; supervisor tore down worktree + branch cleanly.
 ```
 
@@ -98,14 +98,14 @@ spinoff --headless`), run `01kzrcv66p707688b7163rsj0s`, single node `n-0001`.
 - **idle-unmerged safety net (2026-07-28 fix, `3377843`/`a17203c`/`51a0410`) EI laukennut**
   siinä havaintoikkunassa jossa orkestroija katsoi (~13 min agentin "Cooked for 12m 54s"
   -merkinnän jälkeen). Konduktööri joutui nudgeamaan agenttia tmux-paneen kautta
-  (`send-keys` täsmäkäsky ajaa `orchestratectl run merge "$run_id"`) → sitten merge onnistui,
+  (`send-keys` täsmäkäsky ajaa `taskfleet run merge "$run_id"`) → sitten merge onnistui,
   `landed: true git-verified`.
 
 **Miksi tämä on relevantti vaikka issue on `fixed`:** safety net korjasi tapauksen jossa run jää
 IKUISESTI pendingiin, mutta joko (a) sen laukaisukynnys/ajastus ei kata tätä spinoff-polkua, tai
 (b) kynnys on niin pitkä että käytännössä konduktööri ehtii aina puuttua ensin. Kannattaa tarkistaa
 kattaako idle-unmerged-probe spinoff-kindin ja mikä sen idle-kynnys on suhteessa tyypilliseen
-agentin "valmis mutta ei mergännyt" -tilaan. Binary-versio session aikana: `orchestratectl 0.1.5`.
+agentin "valmis mutta ei mergännyt" -tilaan. Binary-versio session aikana: `taskfleet 0.1.5`.
 
 ## Reopen Notes — 2026-08-11
 

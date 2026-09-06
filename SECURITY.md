@@ -12,9 +12,8 @@ please use the repository's **Security** tab to submit a private vulnerability r
 
 - A description of the issue and its impact.
 - Steps to reproduce, ideally with a minimal `taskfleet` invocation
-  or sample run state under the resolved Taskfleet home: normally
-  `~/.taskfleet/runs/<id>/`, or an adopted `~/.orchestratectl/runs/<id>/`
-  during the bounded 0.6/0.7 compatibility window.
+  or sample run state under the Taskfleet home,
+  `~/.taskfleet/runs/<id>/` by default.
 - Whether the issue has been reported elsewhere.
 
 Please do **not** open a public GitHub issue for a vulnerability until a
@@ -31,6 +30,5 @@ tab and credited to the reporter unless anonymity was requested.
   (`git`, `tmux`, `workmux`, Claude Code itself). Report those upstream.
 - Local-only attacks that require shell access to the running user
   account: `taskfleet` runs unprivileged and trusts the local
-  filesystem under its resolved home (`~/.taskfleet/` or a bounded adopted
-  `~/.orchestratectl/`). Read its [threat model in
+  filesystem under its resolved home (`~/.taskfleet/` by default). Read its [threat model in
   AGENTS-AI-FIRST-CLI.md](AGENTS-AI-FIRST-CLI.md) before reporting.

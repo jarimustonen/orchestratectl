@@ -8,7 +8,7 @@
 //!
 //! Every test sets `TASKFLEET_HOME` (and `HOME` where the install
 //! path resolves it) to a tempdir so we never mutate the developer's real
-//! `~/.orchestratectl/` or `~/.claude/` directories under CI or local
+//! `~/.taskfleet/` or `~/.claude/` directories under CI or local
 //! `cargo test`.
 
 use std::fmt::Write as _;
@@ -26,7 +26,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn bin(home: &TempDir) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     // Sandbox log writes and any HOME-derived install paths into the
-    // tempdir so test runs never touch the real `~/.orchestratectl/` or
+    // tempdir so test runs never touch the real `~/.taskfleet/` or
     // `~/.claude/`.
     cmd.env("TASKFLEET_HOME", home.path());
     cmd.env("HOME", home.path());
@@ -1253,7 +1253,7 @@ fn skill_install_force_relinquishes_diverged_dropped_pi_companion() {
     );
 }
 
-/// Path to the out-of-band pi provenance record under the test's orchestratectl
+/// Path to the out-of-band pi provenance record under the test's taskfleet
 /// state root. `bin` sets `TASKFLEET_HOME` to the tempdir root, so the
 /// record resolves to `<home>/state/pi-installed-skills.json`.
 fn env_orch_state_record(home: &tempfile::TempDir) -> std::path::PathBuf {
@@ -1791,7 +1791,7 @@ fn skill_install_force_prunes_deregistered_pi_mirror() {
 #[test]
 fn skill_install_force_preserves_diverged_pi_mirror() {
     // A de-registered pi mirror the user has EDITED (bytes no longer hash to the
-    // recorded value) is never deleted — orchestratectl relinquishes management
+    // recorded value) is never deleted — taskfleet relinquishes management
     // instead, leaving the file and dropping it from the record.
     let home = mk_home();
     let fake_mirror = seed_deregistered_pi_mirror(&home, "gone-skill", true);
@@ -1884,202 +1884,6 @@ fn skill_install_without_force_does_not_prune_pi_mirror() {
     // Still tracked (union-merge preserves the prior record entry).
     let prov = read_provenance(&home);
     assert!(prov["skills"].get("gone-skill").is_some());
-}
-
-#[test]
-fn renamed_owned_skills_migrate_by_hash_across_all_agent_layouts() {
-    let home = mk_home();
-    let legacy = include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md");
-    let hash = sha256_hex(legacy);
-
-    let claude = home.path().join(".claude/skills/orchestratectl-overview");
-    std::fs::create_dir_all(&claude).unwrap();
-    std::fs::write(claude.join("SKILL.md"), legacy).unwrap();
-    std::fs::write(
-        claude.join(".orchestratectl-managed"),
-        "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
-    )
-    .unwrap();
-
-    let codex = home.path().join(".codex/prompts");
-    std::fs::create_dir_all(codex.join("_shared")).unwrap();
-    std::fs::write(codex.join("orchestratectl-overview.md"), legacy).unwrap();
-    std::fs::write(
-        codex.join("_shared/.orchestratectl-managed"),
-        "managed-by: orchestratectl\ncli_version: 0.5.1\nprompt: orchestratectl-overview\n",
-    )
-    .unwrap();
-
-    let pi = home.path().join(".pi/agent/skills/orchestratectl-overview");
-    std::fs::create_dir_all(&pi).unwrap();
-    std::fs::write(pi.join("SKILL.md"), legacy).unwrap();
-    let record = env_orch_state_record(&home);
-    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
-    std::fs::write(
-        &record,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 3,
-            "skills": {"orchestratectl-overview": {
-                "cli_version": "0.5.1",
-                "files": {"SKILL.md": {"sha256": hash, "kind": "skill"}}
-            }}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let out = bin(&home)
-        .args([
-            "skill",
-            "install",
-            "taskfleet-overview",
-            "--agent",
-            "all",
-            "--force",
-            "--output",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "migration failed: {out:?}");
-    for old in [
-        home.path().join(".claude/skills/orchestratectl-overview"),
-        home.path()
-            .join(".codex/prompts/orchestratectl-overview.md"),
-        home.path().join(".pi/agent/skills/orchestratectl-overview"),
-    ] {
-        assert!(
-            !old.exists(),
-            "unchanged legacy copy survived: {}",
-            old.display()
-        );
-    }
-    assert!(home
-        .path()
-        .join(".claude/skills/taskfleet-overview/SKILL.md")
-        .exists());
-    assert!(home
-        .path()
-        .join(".codex/prompts/taskfleet-overview.md")
-        .exists());
-    assert!(home
-        .path()
-        .join(".pi/agent/skills/taskfleet-overview/SKILL.md")
-        .exists());
-    let provenance: Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
-    assert!(provenance["skills"].get("taskfleet-overview").is_some());
-    assert!(provenance["skills"]
-        .get("orchestratectl-overview")
-        .is_none());
-    assert!(
-        !home
-            .path()
-            .join(".codex/prompts/_shared/.orchestratectl-managed")
-            .exists(),
-        "legacy Codex authority must be retired after its validated union is persisted"
-    );
-    let canonical_codex_marker = std::fs::read_to_string(
-        home.path()
-            .join(".codex/prompts/_shared/.taskfleet-managed"),
-    )
-    .unwrap();
-    assert!(!canonical_codex_marker.contains("prompt: orchestratectl-overview"));
-}
-
-#[test]
-fn renamed_skill_migration_preserves_edited_unmanaged_stale_and_corrupt_legacy_bytes() {
-    let home = mk_home();
-    let cases = [
-        (
-            "orchestratectl-overview",
-            b"edited legacy body\n".as_slice(),
-            "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
-        ),
-        (
-            "octl-run-overview",
-            b"unmanaged legacy body\n".as_slice(),
-            "",
-        ),
-        (
-            "octl-spawn-spinoff",
-            b"stale legacy body\n".as_slice(),
-            "not a valid ownership marker\n",
-        ),
-    ];
-    let mut before = Vec::new();
-    for (name, bytes, marker) in cases {
-        let dir = home.path().join(".claude/skills").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("SKILL.md"), bytes).unwrap();
-        if !marker.is_empty() {
-            std::fs::write(dir.join(".orchestratectl-managed"), marker).unwrap();
-        }
-        before.push((dir.join("SKILL.md"), bytes.to_vec()));
-    }
-
-    let out = bin(&home)
-        .args(["skill", "install", "--force", "--output", "json"])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "safe migration failed: {out:?}");
-    for (path, bytes) in before {
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            bytes,
-            "legacy user bytes changed at {}",
-            path.display()
-        );
-    }
-}
-
-#[test]
-fn renamed_skill_migration_fails_closed_on_partial_old_new_ownership() {
-    let home = mk_home();
-    let legacy = include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md");
-    let old = home.path().join(".claude/skills/orchestratectl-overview");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("SKILL.md"), legacy).unwrap();
-    std::fs::write(
-        old.join(".orchestratectl-managed"),
-        "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
-    )
-    .unwrap();
-    let new = home.path().join(".claude/skills/taskfleet-overview");
-    std::fs::create_dir_all(&new).unwrap();
-    std::fs::write(new.join("SKILL.md"), b"user canonical bytes\n").unwrap();
-    let old_before = std::fs::read(old.join("SKILL.md")).unwrap();
-    let new_before = std::fs::read(new.join("SKILL.md")).unwrap();
-
-    let out = bin(&home)
-        .args(["skill", "install", "taskfleet-overview", "--force"])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
-    assert_eq!(err["error"]["code"], "skill_identity_conflict");
-    assert_eq!(std::fs::read(old.join("SKILL.md")).unwrap(), old_before);
-    assert_eq!(std::fs::read(new.join("SKILL.md")).unwrap(), new_before);
-}
-
-#[test]
-fn every_renamed_legacy_skill_hash_is_fixture_pinned() {
-    let fixtures: [(&[u8], &str); 3] = [
-        (
-            include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md"),
-            "92ee1771985a1d2f8a88fc18eeb9fa04032c004fd82bf22836384b6c5a232170",
-        ),
-        (
-            include_bytes!("fixtures/legacy-skills/octl-run-overview/SKILL.md"),
-            "93ac52c3002307b948280fe2780a11d64cea0f45288cb5a3735a3fb7e80c9df2",
-        ),
-        (
-            include_bytes!("fixtures/legacy-skills/octl-spawn-spinoff/SKILL.md"),
-            "caca16387c6e8409f49ae92d8fa90bb33dc5f1b6b0c089fe104d09f7415b27a0",
-        ),
-    ];
-    for (bytes, expected) in fixtures {
-        assert_eq!(sha256_hex(bytes), expected);
-    }
 }
 
 #[test]

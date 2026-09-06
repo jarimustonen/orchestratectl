@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://orchestratectl.dev/schemas/plan.v3.schema.json",
-  "title": "orchestratectl plan.json (v3)",
+  "$id": "https://taskfleet.dev/schemas/plan.v3.schema.json",
+  "title": "taskfleet plan.json (v3)",
   "description": "The interface contract the spec-node writes and the supervisor + orchestrator read. Immutable per revision, versioned, provenance-bearing. See issues/code-pipeline/plan-schema.md and design.md §4/§7/§13. v3 makes the baseline provenance fields (commit_oid, toolchain, enumerated_targets_hash) structurally REQUIRED — a plan missing them is rejected, not silently defaulted. This schema is the checked-in machine-readable artifact; the operative source of truth for readers/writers is the taskfleet_core::plan Rust validator, and a drift-guard test keeps the two in agreement.",
   "type": "object",
   "additionalProperties": false,

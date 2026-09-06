@@ -17,7 +17,7 @@ _Found during an issuectl `/stint` where a prior session launched an intake camp
 
 ## Observed
 
-A previous session ran `orchestratectl run create --kind orchestrate …` and then
+A previous session ran `taskfleet run create --kind orchestrate …` and then
 stopped without driving the fan-out loop. **15 hours later** the run was still a
 zombie:
 
@@ -38,7 +38,7 @@ Some signal that a driver run is stalled/undriven, e.g.:
 
 - `run show` / `run list` flag a `--kind orchestrate` run whose driver node has been
   `pending` with 0 children and no new events for > N minutes (a `stalled: true` hint
-  or a distinct status), so `orchestratectl run list` doesn't show it as an ordinary
+  or a distinct status), so `taskfleet run list` doesn't show it as an ordinary
   live run; and/or
 - the supervisor emits a heartbeat/`driver.idle` warning when it has adopted no
   children within a grace window.

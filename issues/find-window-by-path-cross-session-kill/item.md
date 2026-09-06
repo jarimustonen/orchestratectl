@@ -11,7 +11,7 @@ closed: 2026-06-29
 
 ## Description
 
-`crates/octl-cli/src/supervise/cleanup.rs:268`'s `find_window_by_path` runs `tmux list-windows -a` (ALL sessions) and returns the **first** window whose `pane_current_path` either equals the spinoff's `worktree_path` or starts with `worktree_path + "/"`. The first match wins regardless of session, regardless of whether the window is actually the spinoff's.
+`crates/taskfleet-cli/src/supervise/cleanup.rs:268`'s `find_window_by_path` runs `tmux list-windows -a` (ALL sessions) and returns the **first** window whose `pane_current_path` either equals the spinoff's `worktree_path` or starts with `worktree_path + "/"`. The first match wins regardless of session, regardless of whether the window is actually the spinoff's.
 
 If any unrelated pane (the user's main work pane, a `/worktree-code` review pane in another session, a sibling spinoff's pane briefly cd'd in for inspection) happens to have its cwd inside the spinoff's worktree at the moment cleanup runs, that pane's window gets killed by `tmux kill-window`. The user loses an unrelated session.
 
@@ -19,7 +19,7 @@ This is the dual of `worktree-merge-orphans-tmux-window` — the original window
 
 ## Repro (manual)
 
-1. Spawn a spinoff: `orchestratectl run create --kind spinoff --title repro --task "echo hi" --headless`.
+1. Spawn a spinoff: `taskfleet run create --kind spinoff --title repro --task "echo hi" --headless`.
 2. From any unrelated tmux pane, `cd /Users/<you>/Sources/<proj>__worktrees/wt-<short>-repro`.
 3. Let the spinoff merge (or `run merge` it).
 4. The unrelated pane's window is killed.

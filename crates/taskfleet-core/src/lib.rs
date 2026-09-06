@@ -1,6 +1,6 @@
-//! Core library for orchestratectl.
+//! Core library for taskfleet.
 //!
-//! See `issues/orchestratectl-mvp/design.md` for the canonical schema and
+//! See `issues/taskfleet-mvp/design.md` for the canonical schema and
 //! protocol references. This crate provides:
 //!
 //! - The on-disk schema types ([`Manifest`], [`Node`], [`Event`]).
@@ -68,7 +68,7 @@ pub use telemetry::{
     TELEMETRY_PROTOCOL_VERSION, TELEMETRY_SCHEMA_VERSION,
 };
 
-/// Ensure the orchestratectl root directory exists (`<root>/runs`,
+/// Ensure the taskfleet root directory exists (`<root>/runs`,
 /// `<root>/logs`). Idempotent.
 pub fn ensure_root(root: &std::path::Path) -> Result<()> {
     for sub in ["runs", "logs"] {

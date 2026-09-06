@@ -14,7 +14,7 @@ _Source: src/run/create_
 
 ## Description
 
-When `run create --kind orchestrated` fails inside create.sh (e.g. the --headless/--parent-session crash, see related issue), orchestratectl has ALREADY emitted a `child.spawned` event on the parent run AND created a 0-node phantom child run that sits in `pending` forever.
+When `run create --kind orchestrated` fails inside create.sh (e.g. the --headless/--parent-session crash, see related issue), taskfleet has ALREADY emitted a `child.spawned` event on the parent run AND created a 0-node phantom child run that sits in `pending` forever.
 
 Observed during /orchestrate smoke test (2026-06-28): failed --headless attempt produced child.spawned at parent seq 4 and phantom run 01kw7q48g1v2k15pnb2av4fvy3 (orchestrated, pending, 0 nodes). The orchestrator had to manually `run cancel` it.
 

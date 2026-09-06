@@ -113,7 +113,7 @@ Retry fires only when ALL hold:
 
 - `RETRY_MAX_ATTEMPTS = 3` (matches the observed "third spawn landed" evidence).
 - `RETRY_BASE_BACKOFF = 10s`, `RETRY_MAX_BACKOFF = 120s`, exponential, clamped —
-  `retry_backoff(attempt)`. Env override `OCTL_AGENT_RETRY_BACKOFF_SECS` (tests set `0`).
+  `retry_backoff(attempt)`. Env override `TASKFLEET_AGENT_RETRY_BACKOFF_SECS` (tests set `0`).
 
 ## Invariants preserved
 

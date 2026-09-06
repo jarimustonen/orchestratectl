@@ -11,7 +11,7 @@ closed_by: adr-decision-2
 
 # idle-unmerged CPU clock: monotonic Instant for elapsed time
 
-_Source: crates/octl-cli/src/supervise/mod.rs::cpu_activity_clock_
+_Source: crates/taskfleet-cli/src/supervise/mod.rs::cpu_activity_clock_
 
 ## Description
 

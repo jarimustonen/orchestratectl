@@ -355,10 +355,10 @@ jq -e --arg tag "$tag" '
 ' "$tmp/show-resumed.json" >/dev/null
 jq -e '
   .schema_version == 1 and .data.summary.delegated_failed == 2 and
-  .data.summary.unknown == 5 and .data.summary.reconciled == 5 and
+  .data.summary.unknown == 4 and .data.summary.reconciled == 4 and
   ([.data.targets[].target] | sort) == [
-    "rust:orchestratectl:crates.io", "rust:taskfleet-core:crates.io",
-    "rust:taskfleet:crates.io", "rust:taskfleet:gh-releases",
+    "rust:taskfleet-core:crates.io", "rust:taskfleet:crates.io",
+    "rust:taskfleet:gh-releases",
     "rust:taskfleet:homebrew"
   ] and
   (.data.targets | all(.outcome == "unknown")) and

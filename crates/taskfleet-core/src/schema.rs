@@ -650,11 +650,11 @@ pub struct Manifest {
     pub source_branch: Option<String>,
     /// Root directory under which this run's worktrees live, if any.
     pub worktree_root: Option<String>,
-    /// tmux session orchestratectl created to host this run's headless windows
+    /// tmux session taskfleet created to host this run's headless windows
     /// (`--headless` / `--tmux-session <name>`), if any. `None` for a foreground
     /// run whose window lives in the user's own session — that session is never
     /// a teardown target. When set, the supervisor kills this session once its
-    /// last orchestratectl-owned window is torn down and only the synthetic
+    /// last taskfleet-owned window is torn down and only the synthetic
     /// bootstrap shell window remains, so an empty headless session is not left
     /// behind (issue `headless-tmux-session-not-torn-down`). `#[serde(default)]`
     /// keeps a manifest written before this field existed readable.
@@ -664,8 +664,8 @@ pub struct Manifest {
     /// if any. When the run reaches a terminal state (`done | failed |
     /// cancelled`) the supervisor runs this command (at-least-once, deduped on a
     /// durable `run.notified` marker event — the healthy path fires once, a
-    /// crash between firing and recording may re-fire) with `OCTL_RUN_ID` /
-    /// `OCTL_STATUS` / `OCTL_SUMMARY` (and `OCTL_RUN_KIND` / `OCTL_RUN_TITLE`)
+    /// crash between firing and recording may re-fire) with `TASKFLEET_RUN_ID` /
+    /// `TASKFLEET_STATUS` / `TASKFLEET_SUMMARY` (and `TASKFLEET_RUN_KIND` / `TASKFLEET_RUN_TITLE`)
     /// in its environment, BEFORE teardown removes the worktree/window. This is
     /// how a spawning session learns of completion without polling (issue
     /// `no-completion-notification-to-parent`). `None` for a run created without
@@ -1177,7 +1177,7 @@ mod tests {
         // Field entirely absent (a state file written by an older binary).
         let absent: TmuxIdentity = serde_json::from_value(serde_json::json!({
             "socket": null,
-            "session": "octl",
+            "session": "taskfleet",
             "window_id": "@42",
         }))
         .expect("legacy identity without pane_id must deserialize");
@@ -1187,7 +1187,7 @@ mod tests {
         // Field present but explicitly null.
         let null: TmuxIdentity = serde_json::from_value(serde_json::json!({
             "socket": null,
-            "session": "octl",
+            "session": "taskfleet",
             "window_id": "@42",
             "pane_id": null,
         }))
@@ -1202,7 +1202,7 @@ mod tests {
     fn capture_target_prefers_nonempty_pane_id() {
         let with_pane = TmuxIdentity {
             socket: None,
-            session: "octl".into(),
+            session: "taskfleet".into(),
             window_id: "@42".into(),
             pane_id: Some("%7".into()),
         };

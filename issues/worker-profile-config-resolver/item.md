@@ -6,13 +6,13 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Approved worker control-plane implementation split
-source_ref: orchestratectl:01m0sdkhhm5bxz7b9hvb7qxgt2/implementation-candidate:profile-resolver
+source_ref: taskfleet:01m0sdkhhm5bxz7b9hvb7qxgt2/implementation-candidate:profile-resolver
 originating_run: 01m0sdkhhm5bxz7b9hvb7qxgt2
 originating_run_kind: spinoff
 lane: worker-control-plane
 lane_seq: 30
 blocked_by: ['@worker-telemetry-cli-surfaces']
-collision: [octl-core-schema, run-create, config-harness-selection, run-show-dto]
+collision: [taskfleet-core-schema, run-create, config-harness-selection, run-show-dto]
 closed: 2026-08-24
 commits:
 - hash: 813914e4dd11da47765db2852fe6a6869da034fa
@@ -27,7 +27,7 @@ Implement user-owned executable profiles and deterministic candidate resolution 
 
 ## Scope
 
-- Parse executable profile definitions only from `$ORCHESTRATECTL_HOME/config.toml`; reject executable definitions, commands, argv fragments, adapter paths, and residency changes in repository config.
+- Parse executable profile definitions only from `$TASKFLEET_HOME/config.toml`; reject executable definitions, commands, argv fragments, adapter paths, and residency changes in repository config.
 - Validate bounded profiles with description, capability (`fast | capable | ultra-capable`), residency (`local | remote`), and up to eight ordered pi/Claude argv candidates with optional pi `telemetry = "worker-v1"`.
 - Resolve the approved CLI, environment, repository-selection, and user-default precedence. Legacy harness inputs remain selection aliases for matching user-owned profiles and never synthesize commands.
 - Own the complete deterministic pre-launch selection loop: evaluate `executable_missing`, `autonomous_harness_unsupported`, and `telemetry_unsupported` in that order; autonomous selection accepts only pi+`worker-v1`; fallback remains within the selected profile and cannot weaken residency or required telemetry.

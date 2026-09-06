@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract": "orchestratectl.worker-telemetry-adapter",
+  "contract": "taskfleet.worker-telemetry-adapter",
   "substitution": {
     "$RUN_ID": "the isolated test run identity",
     "$NODE_ID": "the isolated non-terminal test node identity"

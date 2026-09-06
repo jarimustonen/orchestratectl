@@ -74,11 +74,11 @@ use crate::supervise::pid_file;
 /// supervisor genuinely stuck during init (e.g. blocked on the run flock).
 const READY_WAIT: Duration = Duration::from_secs(120);
 
-/// [`READY_WAIT`] in production; tests point `OCTL_READY_WAIT_MS` at a short
+/// [`READY_WAIT`] in production; tests point `TASKFLEET_READY_WAIT_MS` at a short
 /// value so the wedge-backstop path is exercisable in milliseconds. An
 /// unparseable value falls back to the production default.
 fn ready_wait() -> Duration {
-    std::env::var("OCTL_READY_WAIT_MS")
+    std::env::var("TASKFLEET_READY_WAIT_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map_or(READY_WAIT, Duration::from_millis)
@@ -96,11 +96,11 @@ const PID_FILE_WAIT: Duration = Duration::from_secs(15);
 const POLL_TICK: Duration = Duration::from_millis(200);
 
 /// How long [`await_recorded_pid`] waits for the supervisor's pid file.
-/// [`PID_FILE_WAIT`] in production; tests point `OCTL_PID_FILE_WAIT_MS` at a
+/// [`PID_FILE_WAIT`] in production; tests point `TASKFLEET_PID_FILE_WAIT_MS` at a
 /// short value so the fail-loud confirmation path is exercisable in
 /// milliseconds. An unparseable value falls back to the production default.
 fn pid_file_wait() -> Duration {
-    std::env::var("OCTL_PID_FILE_WAIT_MS")
+    std::env::var("TASKFLEET_PID_FILE_WAIT_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map_or(PID_FILE_WAIT, Duration::from_millis)
@@ -108,11 +108,11 @@ fn pid_file_wait() -> Duration {
 
 /// The binary a detached supervisor is spawned from. Production always uses the
 /// current executable (`taskfleet supervise <run-id>`); tests override via
-/// `OCTL_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
+/// `TASKFLEET_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
 /// silent-spawn-failure path can be tested deterministically. Production
 /// callers never set it.
 fn supervise_command() -> Result<Command, CliError> {
-    if let Ok(v) = std::env::var("OCTL_SUPERVISE_BIN") {
+    if let Ok(v) = std::env::var("TASKFLEET_SUPERVISE_BIN") {
         return Ok(Command::new(v));
     }
     crate::self_exec::command()
@@ -212,7 +212,7 @@ pub fn detached_supervise_command(
         .stdout(stderr_file)
         .stderr(stderr_clone)
         // Clear any inherited readiness-fd hint. Only `run create`'s
-        // confirmation path ([`spawn_for_run`]) sets `OCTL_READINESS_FD`, and it
+        // confirmation path ([`spawn_for_run`]) sets `TASKFLEET_READINESS_FD`, and it
         // does so on its OWN command AFTER this builder. Without this clear, a
         // running supervisor (which itself inherited the variable from its
         // parent `run create`) would leak it to every child supervisor it forks,
@@ -237,7 +237,7 @@ pub fn spawn_and_reap(cmd: &mut Command, run_id: &str) -> Result<(), CliError> {
     // grandchild is independent — but surface it rather than swallow it.
     if let Err(e) = child.wait() {
         tracing::warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             run = %run_id,
             error = %e,
             "failed to reap double-fork intermediate (grandchild unaffected)"

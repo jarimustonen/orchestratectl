@@ -66,7 +66,7 @@ use crate::supervise::cleanup;
 /// The bundled merge backend, embedded at compile time so the binary is
 /// self-contained (the external `merge.sh` is sunset). Materialized to a
 /// temp file and executed per invocation. Tests override the resolved
-/// script via `OCTL_MERGE_SH`.
+/// script via `TASKFLEET_MERGE_SH`.
 const MERGE_SH: &str = include_str!("../../scripts/merge.sh");
 
 /// Default reporting node for a single-worker run. Every worktree kind
@@ -861,7 +861,7 @@ fn abort_merge_start(
         data,
     ) {
         tracing::warn!(
-            target: "orchestratectl::merge",
+            target: "taskfleet::merge",
             error = %e,
             "could not record merge.aborted after a failed merge; recovery will clear it"
         );
@@ -990,11 +990,11 @@ fn read_report_file(path: &Path) -> Result<Value, CliError> {
     })
 }
 
-/// Resolve the merge backend: `OCTL_MERGE_SH` override (tests) or the
+/// Resolve the merge backend: `TASKFLEET_MERGE_SH` override (tests) or the
 /// embedded script materialized to a temp file with the exec bit set.
 /// Returns the temp-file guard so it lives until the command has run.
 fn materialize_merge_sh() -> Result<MergeScript, CliError> {
-    if let Ok(path) = std::env::var("OCTL_MERGE_SH") {
+    if let Ok(path) = std::env::var("TASKFLEET_MERGE_SH") {
         return Ok(MergeScript::External(path.into()));
     }
     let mut tmp = tempfile::Builder::new()
@@ -1066,7 +1066,7 @@ fn run_merge_sh(
         // but the worktree can still vanish in the TOCTOU window between that
         // check and this spawn (the supervisor tearing a just-terminalized run
         // down). A `NotFound` here can be the missing `current_dir` OR a missing
-        // executable (e.g. an `OCTL_MERGE_SH` override pointing nowhere, or a
+        // executable (e.g. an `TASKFLEET_MERGE_SH` override pointing nowhere, or a
         // missing shebang interpreter), so disambiguate by stat-ing the worktree
         // instead of blindly blaming either one.
         if e.kind() == std::io::ErrorKind::NotFound

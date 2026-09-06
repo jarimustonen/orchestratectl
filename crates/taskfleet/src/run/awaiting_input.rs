@@ -15,7 +15,7 @@ use taskfleet_core::AwaitingInput;
 pub const GRACE_SECS: i64 = 180;
 /// Operational override for the propagation grace. Whole seconds; invalid or
 /// negative values fall back to [`GRACE_SECS`].
-pub const GRACE_ENV: &str = "OCTL_AWAITING_INPUT_GRACE_SECS";
+pub const GRACE_ENV: &str = "TASKFLEET_AWAITING_INPUT_GRACE_SECS";
 /// Stable machine reason emitted when an escalated request settles `run wait`.
 pub const AWAITING_INPUT_REASON: &str = "worker is awaiting a human decision";
 

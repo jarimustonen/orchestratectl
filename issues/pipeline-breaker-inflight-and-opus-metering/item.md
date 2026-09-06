@@ -21,7 +21,7 @@ The five §9 breakers landed as DETERMINISTIC, supervisor-owned, POST-ATTEMPT ba
 
 2. Spec/verify token/cost metering. SpecProvider/VerifyProvider return Value/VerifyJudgment and do NOT surface Usage, so spec+verify (the Opus-dominant spend, design §11) count only toward process-count — the cost/token breakers see $0 for them. Extend the provider traits to return Usage and fold it into the tally.
 
-Lower-priority: harness artifacts under $TMPDIR/octl-harness are outside the storage-cap measurement; typed BreakerReason enum instead of Option<String>; per-run unique workdir (ULID); failure_counts reset/scope on re-spec.
+Lower-priority: harness artifacts under $TMPDIR/taskfleet-harness are outside the storage-cap measurement; typed BreakerReason enum instead of Option<String>; per-run unique workdir (ULID); failure_counts reset/scope on re-spec.
 
 ## Resolution
 

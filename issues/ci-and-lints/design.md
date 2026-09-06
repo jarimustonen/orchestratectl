@@ -1,6 +1,6 @@
 # CI & lint policy — design notes
 
-Captures the lint level chosen for orchestratectl and why, so future changes to
+Captures the lint level chosen for taskfleet and why, so future changes to
 the config are deliberate rather than accidental.
 
 ## Toolchain
@@ -54,13 +54,13 @@ fault-inject hook). The `cast_*` family is allowed workspace-wide, but the one
 hazardous site it was masking — an `agent_pid_hint as u32` truncation of
 external create.sh input — was fixed with `u32::try_from` (see review below).
 
-## Rust lints: missing_docs = warn on octl-core only
+## Rust lints: missing_docs = warn on taskfleet-core only
 
-`octl-core` is the canonical library surface, so it carries
+`taskfleet-core` is the canonical library surface, so it carries
 `#![warn(missing_docs)]` (crate-root attribute rather than the `[lints]` table,
 which cannot mix `workspace = true` with a `[lints.rust]` override). Every public
 item in `error`, `paths`, `projections`, and `schema` is now documented; the
-schema field docs double as the on-disk state-format reference. `octl-cli` does
+schema field docs double as the on-disk state-format reference. `taskfleet-cli` does
 **not** require docs — it is a binary, not a published API.
 
 ## cargo-deny
@@ -75,7 +75,7 @@ across cargo-deny releases.
   scoped here, not warn/deny knobs). The v1 `vulnerability`/`notice` knobs were
   removed in v2 (cargo-deny#611) — vulnerability advisories now always fail.
 - **bans:** `wildcards = "deny"` with `allow-wildcard-paths = true`; both crates
-  are `publish = false` so the internal `octl-cli -> octl-core` path dep is
+  are `publish = false` so the internal `taskfleet-cli -> taskfleet-core` path dep is
   exempt. Duplicate transitive versions are a warning, not a failure. `deny`
   hard-bans `fs2` (issue cross-platform-lock-validation): a transitive
   reintroduction of the unmaintained/unsound crate fails CI immediately,

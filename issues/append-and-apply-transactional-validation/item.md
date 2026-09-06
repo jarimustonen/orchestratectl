@@ -4,7 +4,7 @@ updated: 2026-06-27
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 ---
 
@@ -14,7 +14,7 @@ closed: 2026-06-27
 
 Spun off from reducer-state-machine-hardening /llm-review (GPT-5.5 #5,#20).
 
-`octl_core::events::append_and_apply_unlocked` writes the event line to events.jsonl and `sync_all()`s it **before** calling `apply_event`. If the reducer rejects the event (any `CorruptEventLog`: the new node.report XOR check, `require_status`, `discussion.resolved` missing resolution, the cross-run guard, etc.), the offending line is already durable in the append-only log. Every subsequent full replay / `rebuild_projections_from_events` then fails on that line, and a later append writes after the bad line, compounding corruption.
+`taskfleet_core::events::append_and_apply_unlocked` writes the event line to events.jsonl and `sync_all()`s it **before** calling `apply_event`. If the reducer rejects the event (any `CorruptEventLog`: the new node.report XOR check, `require_status`, `discussion.resolved` missing resolution, the cross-run guard, etc.), the offending line is already durable in the append-only log. Every subsequent full replay / `rebuild_projections_from_events` then fails on that line, and a later append writes after the bad line, compounding corruption.
 
 This is pre-existing and affects all reducer-side validation, not just the reducer-hardening change — but that change widened the set of events the reducer can reject, so it's worth fixing now.
 

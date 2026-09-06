@@ -24,7 +24,7 @@ closed_by: orchestrator
 
 ## Goal
 
-Add user-configurable agent profiles so `orchestratectl` can select named capability roles rather than hard-coding a single harness/model choice. Profiles describe the available model fleet and let orchestration planning choose an appropriate agent for each run.
+Add user-configurable agent profiles so `taskfleet` can select named capability roles rather than hard-coding a single harness/model choice. Profiles describe the available model fleet and let orchestration planning choose an appropriate agent for each run.
 
 ## Current delivery phase — design refresh only
 
@@ -36,7 +36,7 @@ When that revision is complete, stop at `@worker-control-plane-review`. Producti
 
 Load a user-level configuration from the user's home-directory configuration location, with a repository-local configuration layered above it as an override. Define and document deterministic precedence, validation, missing-file behaviour, and whether profile definitions merge by role/name or replace the lower layer.
 
-The configuration should define stable default role names that `orchestratectl` commands can accept directly. Each profile must include:
+The configuration should define stable default role names that `taskfleet` commands can accept directly. Each profile must include:
 
 - a stable profile/role name;
 - a human-readable description of intended capability and suitable work;
@@ -79,7 +79,7 @@ Laned to `surface` (seq 20) 2026-08-17, sequenced AFTER config-show-layered-view
 
 ### 2026-08-17T08:37:42Z · @orchestrator
 
-Config location, verified 2026-08-17 (Jari asked at handoff). The EXISTING user-level file is `~/.orchestratectl/config.toml`, redirected by $ORCHESTRATECTL_HOME when set; `orchestratectl config path` reports it (exists: true on Jari's machine today). It currently holds only a [harness] section with per-kind overrides, resolved by harness::select with precedence flag > env ORCHESTRATECTL_HARNESS > file per-kind > file section default > built-in 'claude'. IMPORTANT for the implementer: the REPO-LOCAL layer this issue asks for does NOT exist yet — there is exactly one config layer today. Do not assume a layering mechanism is already in place to extend; it has to be built, including the precedence, merge-vs-replace semantics, and missing-file behaviour the issue body calls for. Reuse harness::select's resolver rather than re-implementing resolution (config show already reuses it verbatim, which is why an env override honestly shadows every row).
+Config location, verified 2026-08-17 (Jari asked at handoff). The EXISTING user-level file is `~/.taskfleet/config.toml`, redirected by $TASKFLEET_HOME when set; `taskfleet config path` reports it (exists: true on Jari's machine today). It currently holds only a [harness] section with per-kind overrides, resolved by harness::select with precedence flag > env TASKFLEET_HARNESS > file per-kind > file section default > built-in 'claude'. IMPORTANT for the implementer: the REPO-LOCAL layer this issue asks for does NOT exist yet — there is exactly one config layer today. Do not assume a layering mechanism is already in place to extend; it has to be built, including the precedence, merge-vs-replace semantics, and missing-file behaviour the issue body calls for. Reuse harness::select's resolver rather than re-implementing resolution (config show already reuses it verbatim, which is why an env override honestly shadows every row).
 
 ### 2026-08-17T10:44:28Z · @orchestrator
 
@@ -95,7 +95,7 @@ Note that the merged intake's own use case ARGUES FOR the capability framing rat
 
 ### 2026-08-17T10:44:46Z · @orchestrator
 
-MERGED IN from intake-feature-orchestratectl-d0c82ab27c9d (closed duplicate 2026-08-17, filed from ossctl stint #22). It adds three requirements this issue did not carry:
+MERGED IN from intake-feature-taskfleet-d0c82ab27c9d (closed duplicate 2026-08-17, filed from ossctl stint #22). It adds three requirements this issue did not carry:
 
 1. PER-RUN OVERRIDE IS THE PRIMITIVE. `run create` today exposes only `--harness claude|pi`, with no way to pick a worker model for ONE spawn. This is the mechanism the profile system needs anyway, and it is a legitimate MVP SLICE that may land FIRST — deliver the per-run selection + manifest recording before the full layered profile config, if that sequencing is useful. Do not treat the whole issue as all-or-nothing.
 

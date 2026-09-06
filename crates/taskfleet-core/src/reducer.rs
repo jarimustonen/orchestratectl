@@ -1671,12 +1671,12 @@ mod tests {
     fn tmux_identity_from_data_reads_qualified_fields() {
         let d = serde_json::json!({
             "tmux_socket": "/private/tmp/tmux-501/default",
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@42",
         });
         let id = tmux_identity_from_data(&d).expect("qualified identity");
         assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
-        assert_eq!(id.session, "octl");
+        assert_eq!(id.session, "taskfleet");
         assert_eq!(id.window_id, "@42");
         // No pane_id in this event → None (back-compat / older create.sh).
         assert_eq!(id.pane_id, None);
@@ -1684,7 +1684,7 @@ mod tests {
         // Null socket is tolerated — session + window_id are the minimum.
         let d2 = serde_json::json!({
             "tmux_socket": null,
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@7",
         });
         let id2 = tmux_identity_from_data(&d2).expect("identity without socket");
@@ -1693,7 +1693,7 @@ mod tests {
 
         // A create.sh that emits `tmux_pane_id` is folded into the identity.
         let d3 = serde_json::json!({
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@42",
             "tmux_pane_id": "%7",
         });
@@ -1704,7 +1704,7 @@ mod tests {
         // Explicit `tmux_pane_id: null` (create.sh emits null when its pane
         // query failed) must fold to None — never `Some("null")`.
         let d4 = serde_json::json!({
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@42",
             "tmux_pane_id": null,
         });
@@ -1742,7 +1742,7 @@ mod tests {
             "kind": "spinoff",
             "tmux_window": "🚀 wt/x",
             "tmux_socket": "/private/tmp/tmux-501/default",
-            "tmux_session": "octl",
+            "tmux_session": "taskfleet",
             "tmux_window_id": "@42",
         });
         apply_event(&paths, &ev).expect("node.created applies");
@@ -1750,7 +1750,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let id = n.tmux_identity.expect("qualified identity recorded");
-        assert_eq!(id.session, "octl");
+        assert_eq!(id.session, "taskfleet");
         assert_eq!(id.window_id, "@42");
         assert_eq!(n.tmux_window.as_deref(), Some("🚀 wt/x"));
 

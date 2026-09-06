@@ -14,7 +14,7 @@ closed: 2026-06-29
 
 ## Description
 
-Reported 2026-06-29 from a deutschpad UI-redesign run using `orchestratectl
+Reported 2026-06-29 from a deutschpad UI-redesign run using `taskfleet
 run create --kind spinoff --headless`. After all spinoff runs went terminal
 and the supervisor tore down each worktree, branch, and tmux window
 cleanly, the parent `headless` tmux session itself lingered with a single
@@ -41,14 +41,14 @@ deutschpad folder").
 
 ## Root cause (suspected)
 
-The supervisor's teardown path (`crates/octl-cli/src/supervise/cleanup.rs`)
-correctly removes the orchestratectl-owned tmux window via
+The supervisor's teardown path (`crates/taskfleet-cli/src/supervise/cleanup.rs`)
+correctly removes the taskfleet-owned tmux window via
 `tmux kill-window`, but does not check whether that was the last
-orchestratectl-managed window in the session. When a `--headless` /
+taskfleet-managed window in the session. When a `--headless` /
 `--tmux-session <name>` session was newly created by the first
 `run create`, tmux automatically opens a default shell window in it
-(`zsh` here); subsequent orchestratectl runs add their own windows
-alongside. After teardown of all orchestratectl windows, the default
+(`zsh` here); subsequent taskfleet runs add their own windows
+alongside. After teardown of all taskfleet windows, the default
 `zsh` window keeps the session alive.
 
 ## Expected behaviour
@@ -56,14 +56,14 @@ alongside. After teardown of all orchestratectl windows, the default
 One of:
 
 1. **Teardown also kills the empty session.** When the last
-   orchestratectl-managed window in a `--headless` / `--tmux-session`
+   taskfleet-managed window in a `--headless` / `--tmux-session`
    session is removed, the supervisor should also kill the session if
    the only remaining windows are the synthetic default shell
-   (heuristic: window name `zsh`/`bash` with no orchestratectl
+   (heuristic: window name `zsh`/`bash` with no taskfleet
    metadata).
 2. **Never create the default window in the first place.** When
-   orchestratectl creates the session, immediately replace or kill the
-   bootstrap window so the session only contains orchestratectl windows.
+   taskfleet creates the session, immediately replace or kill the
+   bootstrap window so the session only contains taskfleet windows.
    Then the session naturally dies when `tmux kill-window` removes the
    last one.
 
@@ -77,7 +77,7 @@ bootstrap path. Option 1 is a localized fix in cleanup.
 ## Repro
 
 ```bash
-orchestratectl run create --kind spinoff --headless --task '...'
+taskfleet run create --kind spinoff --headless --task '...'
 # let it self-merge
 tmux ls   # observe leftover empty `headless` session
 ```

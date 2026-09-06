@@ -2,7 +2,7 @@
 //! `supervisor-process` issue.
 //!
 //! Every test points the binary at a fresh `TempDir` via
-//! `TASKFLEET_HOME` so the user's real `~/.orchestratectl/` is
+//! `TASKFLEET_HOME` so the user's real `~/.taskfleet/` is
 //! never touched. tmux/external-process probes are stubbed via
 //! `TMUX_BIN` redirection or by skipping the probe entirely.
 
@@ -21,7 +21,7 @@ fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     // Make tmux probes deterministically "no window" by pointing
     // TMUX_BIN at a binary that prints nothing.
     c.env("TMUX_BIN", "/usr/bin/true");
@@ -199,7 +199,7 @@ fn forge_live_worker_node(home: &TempDir, run_id: &str) -> AgentGuard {
     std::fs::write(
         &node,
         format!(
-            r#"{{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42","agent_pid":{agent_pid}}}"#
+            r#"{{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"taskfleet","tmux_window_id":"@42","agent_pid":{agent_pid}}}"#
         ),
     )
     .unwrap();
@@ -227,7 +227,7 @@ fn forge_terminal_worker_node(home: &TempDir, run_id: &str, kind: &str, report: 
     std::fs::write(
         &node,
         format!(
-            r#"{{"kind":"{kind}","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42"}}"#
+            r#"{{"kind":"{kind}","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"taskfleet","tmux_window_id":"@42"}}"#
         ),
     )
     .unwrap();
@@ -267,7 +267,7 @@ fn forge_live_fanout_node(home: &TempDir, run_id: &str, node_id: &str, branch: &
     std::fs::write(
         &node,
         format!(
-            r#"{{"kind":"fan-out","task":"x","worktree_path":"/fake/wt-{node_id}","branch":"{branch}","tmux_session":"octl","tmux_window_id":"@42"}}"#
+            r#"{{"kind":"fan-out","task":"x","worktree_path":"/fake/wt-{node_id}","branch":"{branch}","tmux_session":"taskfleet","tmux_window_id":"@42"}}"#
         ),
     )
     .unwrap();
@@ -304,7 +304,7 @@ fn latest_run_status(events: &Path) -> Option<String> {
 /// confirmed-merge path (`via: "explicit-merge"`), so only a branch actually
 /// merged into its source is dropped (issue `blocked-report-deletes-branch`).
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn terminal_report_rolls_run_to_done_and_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -356,7 +356,7 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
 /// branch or worktree — that committed, unmerged work must survive for the human
 /// to pick up. A `cleanup.branch_preserved` audit event records the handoff.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn blocked_report_rolls_run_to_failed_but_preserves_branch() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -408,7 +408,7 @@ fn blocked_report_rolls_run_to_failed_but_preserves_branch() {
 /// (the existing path). The supervisor must still perform the autonomous
 /// teardown when it next ticks over the now-terminal run.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn terminal_via_cancel_still_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -418,7 +418,7 @@ fn terminal_via_cancel_still_cleans_up() {
     let node = home.path().join("cancel-node.json");
     std::fs::write(
         &node,
-        r#"{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42"}"#,
+        r#"{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"taskfleet","tmux_window_id":"@42"}"#,
     )
     .unwrap();
     run_ok(bin(&home).args([
@@ -467,7 +467,7 @@ fn terminal_via_cancel_still_cleans_up() {
 /// down with the source-relative (non-merge) path — never a force removal — so
 /// branch-preserving work is safe.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn per_node_cancel_of_every_child_rolls_fanout_up_to_cancelled() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -525,7 +525,7 @@ fn per_node_cancel_of_every_child_rolls_fanout_up_to_cancelled() {
 /// `cleanup.window_missing` audit event and STILL roll the run up to `done`. The
 /// run must not fail just because a window was already gone.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn missing_window_records_event_without_failing_run() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -581,7 +581,7 @@ fn missing_window_records_event_without_failing_run() {
 /// terminal — synthesizing a `node.report {failed: true,
 /// reason: "agent-died"}` event for the supervisor's reducer to fold.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn v2_agent_pid_discovery_via_liveness_probe() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v2-pid");
@@ -626,8 +626,8 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     // grace itself is covered by the dedicated `*_within_grace` regressions.
     run_ok(
         bin(&home)
-            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
-            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .env("TASKFLEET_WATCHDOG_GRACE_SECS", "0")
+            .env("TASKFLEET_DEATH_GRACE_SECS", "0")
             .args(["--output", "json", "supervise", &run_id, "--once"]),
     );
     let events = run_dir(&home, &run_id).join("events.jsonl");
@@ -646,8 +646,8 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
     run_ok(
         bin(&home)
-            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
-            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .env("TASKFLEET_WATCHDOG_GRACE_SECS", "0")
+            .env("TASKFLEET_DEATH_GRACE_SECS", "0")
             .args(["--output", "json", "supervise", &run_id, "--once"]),
     );
     assert!(
@@ -667,7 +667,7 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
 /// the watchdog's own PID, and (3) the watchdog's verdict on a dead
 /// PID is `Dead`. Cross-platform via the `sysinfo` crate path.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn v3_kill_and_start_time_identity() {
     // Stability: two reads of our own start_time differ by ≤ 1s.
     // (Already covered by a unit test on watchdog.rs; here we
@@ -706,8 +706,8 @@ fn v3_kill_and_start_time_identity() {
     // Grace disabled: this test asserts the recycled-PID verdict, not freshness.
     run_ok(
         bin(&home)
-            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
-            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .env("TASKFLEET_WATCHDOG_GRACE_SECS", "0")
+            .env("TASKFLEET_DEATH_GRACE_SECS", "0")
             .args(["--output", "json", "supervise", &run_id, "--once"]),
     );
     let events = run_dir(&home, &run_id).join("events.jsonl");
@@ -756,11 +756,11 @@ fn forge_pid_node(home: &TempDir, run_id: &str, agent_pid: i64) -> std::path::Pa
 /// destructive bug — the watchdog used to synthesize `agent-died` within
 /// milliseconds of `node.created`, before the real agent had a chance to
 /// checkpoint that it is alive, and auto-cleanup would then tear down the live
-/// agent's worktree. The default grace (no `OCTL_WATCHDOG_GRACE_SECS` override)
+/// agent's worktree. The default grace (no `TASKFLEET_WATCHDOG_GRACE_SECS` override)
 /// must suppress the synthesis. The test runs far inside the 5s window, so no
 /// `sleep` is needed.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn fresh_spawn_dead_pid_suppressed_within_grace() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "fresh-dead-grace");
@@ -787,7 +787,7 @@ fn fresh_spawn_dead_pid_suppressed_within_grace() {
 /// positive, it only suppresses one. Covers criterion 4's "fresh spawn with
 /// alive agent does not trigger watchdog".
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn fresh_spawn_alive_pid_no_synthesis() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "fresh-alive");
@@ -810,7 +810,7 @@ fn fresh_spawn_alive_pid_no_synthesis() {
 /// older than the grace. Covers criterion 4's "fresh spawn with dead agent does
 /// trigger watchdog (after grace)" and criterion 2.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn dead_pid_synthesizes_after_grace() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "dead-after-grace");
@@ -825,7 +825,7 @@ fn dead_pid_synthesizes_after_grace() {
     // tick fires immediately (design.md §2.1a); the persisted defer-then-fire
     // behavior at a non-zero grace is covered by
     // `dead_pid_deferred_within_death_grace_then_fires`.
-    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "0").args([
+    run_ok(bin(&home).env("TASKFLEET_DEATH_GRACE_SECS", "0").args([
         "--output",
         "json",
         "supervise",
@@ -853,7 +853,7 @@ fn dead_pid_synthesizes_after_grace() {
 /// terminal report. A later tick past the grace fires it. This is what lets an
 /// in-flight `worker.exited` / merge append win the race.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn dead_pid_deferred_within_death_grace_then_fires() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "death-grace-defer");
@@ -865,7 +865,7 @@ fn dead_pid_deferred_within_death_grace_then_fires() {
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
     // A generous death grace: the first tick must DEFER, recording the anchor.
-    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "3600").args([
+    run_ok(bin(&home).env("TASKFLEET_DEATH_GRACE_SECS", "3600").args([
         "--output",
         "json",
         "supervise",
@@ -886,7 +886,7 @@ fn dead_pid_deferred_within_death_grace_then_fires() {
 
     // A later tick with a zero grace: the anchor is now older than the grace, so
     // the backstop fires.
-    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "0").args([
+    run_ok(bin(&home).env("TASKFLEET_DEATH_GRACE_SECS", "0").args([
         "--output",
         "json",
         "supervise",
@@ -929,7 +929,7 @@ fn wedge_corrupt_middle_line(events: &Path) {
 /// single `supervisor.event_log_quarantined` event is emitted. After the heal
 /// the log replays strictly (no poison bytes left for a future reader).
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn corrupt_tail_line_is_quarantined_and_log_heals() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
@@ -984,7 +984,7 @@ fn corrupt_tail_line_is_quarantined_and_log_heals() {
 /// `supervisor.event_log_skipped_line` and skipped in memory, the bytes left
 /// on disk, never re-erroring on the same offset every tick.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn corrupt_tail_line_is_skipped_once_without_looping() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
@@ -1040,7 +1040,7 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
 /// would panic on it; the lenient `count_kind_lenient` (used by `wait_for_kind`)
 /// skips it and still counts the intact records before it.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn lenient_poll_skips_torn_trailing_line() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "torn-tail");
@@ -1071,7 +1071,7 @@ fn lenient_poll_skips_torn_trailing_line() {
 /// guard for the supervisor-process review FIX (F3) — `ctrlc` could not
 /// surface which signal fired, so the old code exited 0 with no signal field.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn signal_exit_codes_and_payload() {
     use std::io::Read;
     for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
@@ -1155,14 +1155,14 @@ fn signal_exit_codes_and_payload() {
 ///
 /// To make this a *real* regression guard (an idle supervisor's worker would
 /// otherwise drain naturally before the signal, hiding a missing flush), the
-/// `OCTL_TEST_SLOW_LOG_WRITES` hook throttles each log `write(2)` so the
+/// `TASKFLEET_TEST_SLOW_LOG_WRITES` hook throttles each log `write(2)` so the
 /// buffered "supervisor started" event is provably still in flight at signal
 /// time — only the explicit `flush_logs()` drain gets it to disk before exit.
 // The slow-writer injection is deliberately unavailable in production
 // binaries, so this deterministic flush test only applies to debug builds.
 #[cfg(debug_assertions)]
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn sigterm_flushes_buffered_supervisor_logs() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "sigterm-flush");
@@ -1171,7 +1171,7 @@ fn sigterm_flushes_buffered_supervisor_logs() {
     // Slow log writes (250ms each) keep the worker behind the shutdown path,
     // so the flush — not luck — is what lands the event on disk.
     let mut child = bin(&home)
-        .env("OCTL_TEST_SLOW_LOG_WRITES", "250")
+        .env("TASKFLEET_TEST_SLOW_LOG_WRITES", "250")
         .args(["supervise", &run_id])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1204,7 +1204,7 @@ fn sigterm_flushes_buffered_supervisor_logs() {
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .any(|v| {
-            v["target"] == "orchestratectl::supervise"
+            v["target"] == "taskfleet::supervise"
                 && v["fields"]["message"]
                     .as_str()
                     .is_some_and(|m| m.contains("received termination signal"))
@@ -1225,13 +1225,13 @@ fn sigterm_flushes_buffered_supervisor_logs() {
 /// `--release` load the boot window widened enough that the SIGTERM landed
 /// mid-boot and the supervisor exited 2 (`unix_wait_status(512)`) instead of 143.
 ///
-/// `OCTL_TEST_SLOW_BOOT` is a bounded barrier that holds boot right after the pid
+/// `TASKFLEET_TEST_SLOW_BOOT` is a bounded barrier that holds boot right after the pid
 /// claim UNTIL a termination signal is observed, so the signal is *proven* to
 /// land in the boot-window branch — a plain sleep could expire under a
 /// descheduled test and let the signal hit the loop instead, passing even
 /// against the buggy code.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn signal_during_boot_exits_143() {
     use std::io::Read;
     for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
@@ -1240,7 +1240,7 @@ fn signal_during_boot_exits_143() {
         // The barrier parks boot in the pid-claimed-but-not-yet-ready window;
         // the 5s cap is a safety bound (the signal below releases it far sooner).
         let mut child = bin(&home)
-            .env("OCTL_TEST_SLOW_BOOT", "5000")
+            .env("TASKFLEET_TEST_SLOW_BOOT", "5000")
             .args(["supervise", &run_id])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1302,7 +1302,7 @@ fn signal_during_boot_exits_143() {
 /// the duplicate-terminal-report race — the watchdog re-reads `last_report`
 /// (now under the run lock) before committing a synthetic report.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn watchdog_defers_when_report_already_present() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "wd-defer");
@@ -1342,8 +1342,8 @@ fn watchdog_defers_when_report_already_present() {
     // what blocks synthesis; otherwise this could pass for the wrong reason.
     run_ok(
         bin(&home)
-            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
-            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .env("TASKFLEET_WATCHDOG_GRACE_SECS", "0")
+            .env("TASKFLEET_DEATH_GRACE_SECS", "0")
             .args(["--output", "json", "supervise", &run_id, "--once"]),
     );
 
@@ -1365,7 +1365,7 @@ fn watchdog_defers_when_report_already_present() {
 /// — the exact signal a closing terminal sends. Without `setsid` the
 /// supervisor would share the spawner's group and die.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn spawned_supervisor_survives_sighup_to_spawner_group() {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
@@ -1392,11 +1392,11 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
     cmd.arg("-c").arg(script);
     cmd.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    cmd.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    cmd.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     cmd.env("TMUX_BIN", "/usr/bin/true");
     // Keep the watchdog from synthesizing an agent-death for the forged node
     // during the test window, so the supervisor stays alive to receive SIGHUP.
-    cmd.env("OCTL_WATCHDOG_GRACE_SECS", "60");
+    cmd.env("TASKFLEET_WATCHDOG_GRACE_SECS", "60");
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     // SAFETY: setpgid(0,0) is async-signal-safe; it makes the shell its own
@@ -1499,7 +1499,7 @@ fn sig_num(sig: &str) -> libc::c_int {
 /// Reattach again: the previous supervisor is dead, so the new one
 /// boots cleanly. Demonstrates the stale-PID detection path.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn v8_reattach_end_to_end() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v8");
@@ -1543,7 +1543,7 @@ fn v8_reattach_end_to_end() {
 /// discussions/ or spinoffs/ projection dirs are ever created — asserted here as
 /// a regression guard that the machinery is truly gone.)
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn v9_cancel_synthesizes_report_no_spinoffs() {
     let home = TestHome::new();
     let parent = create_run(&home, "fan-out", "v9-parent");
@@ -1662,7 +1662,7 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
 /// is removed — the TempDir-teardown case — there is no log to write to,
 /// and the event is correctly skipped; only the clean exit is observable.)
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn self_terminate_when_run_dir_vanishes() {
     use std::time::Instant;
 
@@ -1734,7 +1734,7 @@ fn self_terminate_when_run_dir_vanishes() {
 /// `append_and_apply_event` write through `create_dir_all`, so a sloppy
 /// implementation leaves a ghost dir behind after an operator's `rm -rf`.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn self_terminate_when_whole_run_dir_removed() {
     use std::time::Instant;
 
@@ -1820,7 +1820,7 @@ fn self_terminate_when_whole_run_dir_removed() {
 /// supervisor against it (with the create-window grace overridden to 0 so the
 /// guard's age gate does not defer) and assert it fails the run loudly.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn no_worker_node_run_terminalizes_failed() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "no-worker");
@@ -1833,9 +1833,9 @@ fn no_worker_node_run_terminalizes_failed() {
     assert_eq!(manifest["node_count"], 0, "precondition: no worker node");
 
     // Enough ticks (>= NO_WORKER_TICKS) for the guard to fire; the supervisor
-    // exits early via all_work_done once it terminalizes. `OCTL_NO_WORKER_GRACE_SECS=0`
+    // exits early via all_work_done once it terminalizes. `TASKFLEET_NO_WORKER_GRACE_SECS=0`
     // disables the create-window age gate (production waits 15 min).
-    run_ok(bin(&home).env("OCTL_NO_WORKER_GRACE_SECS", "0").args([
+    run_ok(bin(&home).env("TASKFLEET_NO_WORKER_GRACE_SECS", "0").args([
         "--output",
         "json",
         "supervise",
@@ -1879,13 +1879,13 @@ fn no_worker_node_run_terminalizes_failed() {
 /// (production) create-window grace, a freshly-created zero-node run must stay
 /// `pending`, not be terminalized `failed`.
 #[test]
-#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn no_worker_guard_defers_within_create_window() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "young-no-worker");
     let rdir = run_dir(&home, &run_id);
 
-    // No OCTL_NO_WORKER_GRACE_SECS override: the default 15-min grace applies, so
+    // No TASKFLEET_NO_WORKER_GRACE_SECS override: the default 15-min grace applies, so
     // this ~0s-old run is well inside the create window and must be left alone.
     run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "8"]));
 

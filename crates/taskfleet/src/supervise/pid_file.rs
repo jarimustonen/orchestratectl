@@ -84,7 +84,7 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
         // §7.6 PID-reuse defense, so make it visible rather than
         // silent — we can normally always read our own start-time.
         tracing::warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             pid,
             "could not read own start_time; writing legacy pid file (no recycle defense)"
         );
@@ -183,7 +183,7 @@ pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> 
         // Stale (dead, or a recycled PID per the start-time check) or a legacy
         // bare-integer file: log and overwrite under the lock.
         tracing::warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             stale_pid = existing,
             "claiming run: removing stale supervisor.pid"
         );

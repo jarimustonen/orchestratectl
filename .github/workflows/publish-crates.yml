@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.0
-      - name: Verify exact five-leg topology, pins, repository, and version
+      - name: Verify canonical topology, pins, repository, and version
         shell: bash
         run: |
           set -euo pipefail
@@ -51,12 +51,10 @@ jobs:
           test "$GITHUB_REF_TYPE" != tag || test "$GITHUB_REF_NAME" = "v$version"
           repo="$(./scripts/validate-release-topology.sh)"
           cargo metadata --locked --no-deps --format-version 1 | jq -e --arg version "$version" --arg repo "https://github.com/$repo" '
-            ([.packages[].name] | sort) == ["orchestratectl","taskfleet","taskfleet-core"] and
+            ([.packages[].name] | sort) == ["taskfleet","taskfleet-core"] and
             all(.packages[]; .version == $version and .repository == $repo) and
             ([.packages[] | select(.name == "taskfleet") | .dependencies[] |
-              select(.name == "taskfleet-core" and .req == ("=" + $version))] | length) == 1 and
-            ([.packages[] | select(.name == "orchestratectl") | .dependencies[] |
-              select(.name == "taskfleet" and .req == ("=" + $version))] | length) == 1
+              select(.name == "taskfleet-core" and .req == ("=" + $version))] | length) == 1
           ' >/dev/null
 
   fmt:
@@ -185,22 +183,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: crates-io-receipt-taskfleet
-          path: target/release-receipts/*.json
-
-  publish-wrapper:
-    name: crates.io / orchestratectl compatibility wrapper
-    needs: [publish-taskfleet]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - run: ./scripts/publish-crates.sh publish orchestratectl
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          SOURCE_COMMIT: ${{ github.sha }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: crates-io-receipt-orchestratectl
           path: target/release-receipts/*.json

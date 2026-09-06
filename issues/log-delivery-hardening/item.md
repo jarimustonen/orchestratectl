@@ -5,14 +5,14 @@ type: improvement
 reporter: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 labels: [review-spinoff]
 closed: 2026-06-28
 ---
 
 # Harden log delivery: back-pressure or dropped-event accounting
 
-_Source: crates/octl-cli/src/cli.rs_
+_Source: crates/taskfleet-cli/src/cli.rs_
 
 ## Description
 

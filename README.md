@@ -45,24 +45,19 @@ those layouts beneath a different base, and `--dry-run` previews every write.
 
 ## Install
 
-> **Pre-cut status:** this repository is staged at version 0.5.1 and is not a
-> publishable canonical release. Do not install from this source posture. The
-> latest public binary and Homebrew formula still use the legacy
-> `orchestratectl` identity while the 0.6.0 release machinery and tap migration
-> are prepared.
-
-After the canonical release, Cargo installs the primary Taskfleet command:
+Cargo installs the Taskfleet command:
 
 ```bash
 cargo install taskfleet
 ```
 
-The canonical source repository is
-[`jarimustonen/taskfleet`](https://github.com/jarimustonen/taskfleet). The
-existing public Homebrew location remains
-`jarimustonen/orchestratectl/orchestratectl` until its separately gated
-migration. That legacy channel installs `orchestratectl` 0.5.1 today; it is
-not an alias for the staged `taskfleet` binary.
+The source repository is
+[`jarimustonen/taskfleet`](https://github.com/jarimustonen/taskfleet). Homebrew
+installs the same command:
+
+```bash
+brew install jarimustonen/taskfleet/taskfleet
+```
 
 ## Quick start
 
@@ -166,7 +161,7 @@ Repo layout:
 - `docs/decisions/`: architecture decision records, including ADR 0001
   (the thin-supervisor model behind the 0.2 series).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the code map and compatibility
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the code map and process
 boundaries. `AGENTS.md` contains the operating policy and state-integrity
 invariants governing the reducer, lock layer, and teardown paths.
 

@@ -70,7 +70,7 @@ const CHILD_SPAWN_DEADLINE: Duration = Duration::from_secs(10);
 /// Env override for [`CHILD_SPAWN_DEADLINE`] (whole seconds; unparseable →
 /// default). Tests set a small value to reach the `Failed`/retry transition
 /// without a real 10s wait.
-const CHILD_SPAWN_DEADLINE_ENV: &str = "OCTL_CHILD_SPAWN_DEADLINE_SECS";
+const CHILD_SPAWN_DEADLINE_ENV: &str = "TASKFLEET_CHILD_SPAWN_DEADLINE_SECS";
 
 /// Base backoff before re-forking a child supervisor whose previous attempt
 /// never confirmed a pid. Doubles per attempt, capped at
@@ -111,7 +111,7 @@ const AGENT_RETRY_MAX_ATTEMPTS: u32 = 3;
 /// Env override for [`AGENT_RETRY_MAX_ATTEMPTS`] (whole count; unparseable →
 /// default). Tests set a small value to reach the exhausted-`failed` transition
 /// quickly.
-const AGENT_RETRY_MAX_ATTEMPTS_ENV: &str = "OCTL_AGENT_RETRY_MAX_ATTEMPTS";
+const AGENT_RETRY_MAX_ATTEMPTS_ENV: &str = "TASKFLEET_AGENT_RETRY_MAX_ATTEMPTS";
 
 /// Base backoff before re-spawning a dead empty-handed worker. Doubles per
 /// attempt, capped at [`AGENT_RETRY_MAX_BACKOFF`], so a fast-recurring transient
@@ -124,7 +124,7 @@ const AGENT_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(120);
 /// Env override for [`AGENT_RETRY_BASE_BACKOFF`] (whole seconds; unparseable →
 /// default). Tests set `0` so the reconcile re-spawns on the next tick without a
 /// real backoff wait.
-const AGENT_RETRY_BACKOFF_ENV: &str = "OCTL_AGENT_RETRY_BACKOFF_SECS";
+const AGENT_RETRY_BACKOFF_ENV: &str = "TASKFLEET_AGENT_RETRY_BACKOFF_SECS";
 
 /// Max consecutive native materialization failures while re-spawning ONE parked node before
 /// the run is terminalized `failed`. Distinct from a dying agent (a broken spawn
@@ -135,7 +135,7 @@ const AGENT_RESPAWN_MAX_FAILURES: u32 = 3;
 
 /// Env override for [`AGENT_RESPAWN_MAX_FAILURES`] (whole count; unparseable →
 /// default). Tests set a small value to reach the spawn-failure terminal path fast.
-const AGENT_RESPAWN_MAX_FAILURES_ENV: &str = "OCTL_AGENT_RESPAWN_MAX_FAILURES";
+const AGENT_RESPAWN_MAX_FAILURES_ENV: &str = "TASKFLEET_AGENT_RESPAWN_MAX_FAILURES";
 
 /// The effective spawn-failure budget, honoring [`AGENT_RESPAWN_MAX_FAILURES_ENV`].
 fn agent_respawn_max_failures() -> u32 {
@@ -169,7 +169,7 @@ fn agent_retry_backoff(attempt: u32) -> Duration {
         Err(_) => AGENT_RETRY_BASE_BACKOFF.as_secs(),
     };
     let shift = attempt.saturating_sub(1).min(5);
-    // Saturating arithmetic throughout so a large `OCTL_AGENT_RETRY_BACKOFF_SECS`
+    // Saturating arithmetic throughout so a large `TASKFLEET_AGENT_RETRY_BACKOFF_SECS`
     // can never overflow the multiply (a panic) or the later `now + backoff`
     // `Instant` add — the `.min(cap)` bounds it to a small ceiling regardless.
     let secs = base_secs
@@ -213,11 +213,11 @@ const NO_WORKER_TICKS: u32 = 3;
 /// the no-worker guard may fail it. Comfortably beyond the maximum native materializer
 /// window (`--agent-startup-timeout` caps at 600s) so an in-flight creation is
 /// never clipped; the field-reported stuck runs were frozen for >1h, far past
-/// this. Overridable via `OCTL_NO_WORKER_GRACE_SECS` (tests set `0`).
+/// this. Overridable via `TASKFLEET_NO_WORKER_GRACE_SECS` (tests set `0`).
 const NO_WORKER_GRACE: Duration = Duration::from_secs(900);
 
 /// Env override for [`NO_WORKER_GRACE`] (whole seconds; unparseable → default).
-const NO_WORKER_GRACE_ENV: &str = "OCTL_NO_WORKER_GRACE_SECS";
+const NO_WORKER_GRACE_ENV: &str = "TASKFLEET_NO_WORKER_GRACE_SECS";
 
 /// The effective no-worker grace, honoring [`NO_WORKER_GRACE_ENV`].
 fn no_worker_grace() -> Duration {
@@ -278,7 +278,7 @@ const WATCHDOG_SPAWN_GRACE: Duration = Duration::from_secs(5);
 /// Env var that overrides [`WATCHDOG_SPAWN_GRACE`] (whole seconds). `0`
 /// disables the grace entirely (a non-Alive verdict fires on the first tick),
 /// which is how the liveness-semantics integration tests opt out of the delay.
-const SPAWN_GRACE_ENV: &str = "OCTL_WATCHDOG_GRACE_SECS";
+const SPAWN_GRACE_ENV: &str = "TASKFLEET_WATCHDOG_GRACE_SECS";
 
 /// Minimum gap between successive "log events dropped" warnings. The
 /// supervisor never renders a success envelope while it runs, so unlike
@@ -325,7 +325,7 @@ fn finish_signal_exit(run_id: &str, our_pid: u32, signal_num: libc::c_int) -> ! 
     // silent. (It also doubles as the last-event-before-flush the SIGTERM-flush
     // test asserts on, but it earns its place on operational grounds alone.)
     info!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         run_id = %run_id,
         pid = our_pid,
         signal = term_signal_name(signal_num),
@@ -480,7 +480,7 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     // wedge boot indefinitely even if misused (the env var also being present
     // in a production environment must not hang the supervisor). Never set in
     // production.
-    if let Ok(raw) = std::env::var("OCTL_TEST_SLOW_BOOT") {
+    if let Ok(raw) = std::env::var("TASKFLEET_TEST_SLOW_BOOT") {
         if let Ok(max_ms) = raw.parse::<u64>() {
             const BOOT_BARRIER_CAP_MS: u64 = 10_000;
             let deadline = Instant::now() + Duration::from_millis(max_ms.min(BOOT_BARRIER_CAP_MS));
@@ -497,7 +497,7 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     // every early `?` funnels through the single cleanup below.
     let assemble = || -> Result<(state::SupervisorState, tail::EventTail, _), CliError> {
         info!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             run_id = %run_id,
             pid = our_pid,
             "supervisor started"
@@ -568,7 +568,7 @@ pub fn dispatch(
 
     // Readiness pipe (issue `supervisor-confirm-readiness-pipe`): when `run
     // create` spawned us it passed the write end of a pipe via
-    // `OCTL_READINESS_FD`; it is blocked reading it. We confirm boot down that
+    // `TASKFLEET_READINESS_FD`; it is blocked reading it. We confirm boot down that
     // pipe AFTER `claim_pid_atomic` + init succeeds, or report the real reason
     // if boot fails — so the parent never false-fails a slow-but-healthy boot,
     // and never orphans a supervisor it was told died. `from_env` is a no-op
@@ -777,7 +777,7 @@ pub fn dispatch(
         let own_events = match own_tail.poll() {
             Ok(v) => v,
             Err(e) => {
-                warn!(target: "orchestratectl::supervise", error = %e.message, "own tail failed");
+                warn!(target: "taskfleet::supervise", error = %e.message, "own tail failed");
                 Vec::new()
             }
         };
@@ -792,7 +792,7 @@ pub fn dispatch(
                         .map(str::to_string);
                     let Some(child_run_id) = child_run_id else {
                         warn!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             seq = ev.seq,
                             "child.spawned missing child_run_id; skipping"
                         );
@@ -804,7 +804,7 @@ pub fn dispatch(
                     let Ok(child_run_id) = parse_run_id(&child_run_id).map(|r| r.to_string())
                     else {
                         warn!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             seq = ev.seq,
                             child = %child_run_id,
                             "child.spawned has unsafe child_run_id; skipping"
@@ -818,7 +818,7 @@ pub fn dispatch(
                     // event instead.
                     let Some(parent_node_id) = ev.node_id.clone() else {
                         warn!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             seq = ev.seq,
                             child = %child_run_id,
                             "child.spawned missing node_id; skipping"
@@ -872,7 +872,7 @@ pub fn dispatch(
                         }
                         Err(e) => {
                             warn!(
-                                target: "orchestratectl::supervise",
+                                target: "taskfleet::supervise",
                                 child = %child_run_id,
                                 error = %e.message,
                                 "child fork failed (tail still open; will retry under bounded policy)"
@@ -944,7 +944,7 @@ pub fn dispatch(
                 Ok(v) => v,
                 Err(e) => {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         child = %cid,
                         error = %e.message,
                         "child tail failed"
@@ -973,7 +973,7 @@ pub fn dispatch(
                         ) {
                             Ok(Some(())) => {
                                 info!(
-                                    target: "orchestratectl::supervise",
+                                    target: "taskfleet::supervise",
                                     child = %cid,
                                     seq = ev.seq,
                                     "consumed node.report"
@@ -995,7 +995,7 @@ pub fn dispatch(
                                 // advanced report is safe: the cursor guard
                                 // makes it an idempotent no-op.
                                 warn!(
-                                    target: "orchestratectl::supervise",
+                                    target: "taskfleet::supervise",
                                     child = %cid,
                                     seq = ev.seq,
                                     error = %e.message,
@@ -1064,7 +1064,7 @@ pub fn dispatch(
         // `agent_pid` recorded by native materialization integration.
         if let Err(e) = watchdog_tick(&paths, &mut retry_states) {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 error = %e.message,
                 "watchdog tick failed"
             );
@@ -1163,7 +1163,7 @@ pub fn dispatch(
                             ) {
                                 Ok(_) => {
                                     warn!(
-                                        target: "orchestratectl::supervise",
+                                        target: "taskfleet::supervise",
                                         run_id = %run_id,
                                         reason = NO_WORKER_REASON,
                                         "run has no worker node and no children past the create \
@@ -1173,7 +1173,7 @@ pub fn dispatch(
                                 }
                                 Err(e) => {
                                     warn!(
-                                        target: "orchestratectl::supervise",
+                                        target: "taskfleet::supervise",
                                         error = %e,
                                         "failed to record no-worker terminal run.status; will retry next tick"
                                     );
@@ -1188,7 +1188,7 @@ pub fn dispatch(
                     }
                     Err(e) => {
                         warn!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             error = %e,
                             "could not lock run to terminalize no-worker; will retry next tick"
                         );
@@ -1225,13 +1225,13 @@ pub fn dispatch(
                 json!({ "status": status_str }),
             ) {
                 warn!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     error = %e,
                     "failed to record terminal run.status; will retry next tick"
                 );
             } else {
                 info!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     run_id = %run_id,
                     status = status_str,
                     "rolled run up to terminal status from terminal node(s)"
@@ -1274,7 +1274,7 @@ pub fn dispatch(
                         );
                         if !notified && notify_attempts >= NOTIFY_MAX_ATTEMPTS {
                             warn!(
-                                target: "orchestratectl::supervise",
+                                target: "taskfleet::supervise",
                                 run_id = %run_id,
                                 attempts = notify_attempts,
                                 "giving up on completion notify hook after repeated marker-append failures"
@@ -1364,7 +1364,7 @@ pub fn dispatch(
     };
     if exit_reason == "run-dir-vanished" {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             run_id = %run_id,
             pid = our_pid,
             "run dir vanished; supervisor self-terminating"
@@ -1489,7 +1489,7 @@ fn signal_children_term<'a>(root: &Path, child_run_ids: impl Iterator<Item = &'a
             libc::kill(pid_t, libc::SIGTERM);
         }
         info!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             child = %child_run_id,
             pid,
             "sent SIGTERM to child supervisor (parent shutting down on run-dir-vanished)"
@@ -1645,7 +1645,7 @@ fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::Su
         .collect();
     for (cid, reason) in corrupt {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             child = %cid,
             source = "spawned_children",
             reason = %reason,
@@ -1673,7 +1673,7 @@ fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::Su
             // Non-fatal: the warn above is the guaranteed signal; the durable
             // record is best-effort. We still drop the id below (see the fn doc).
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 child = %cid,
                 error = %e,
                 "failed to record supervisor.child_id_quarantined (dropping from live set anyway)"
@@ -1762,7 +1762,7 @@ fn reconcile_child_spawns(
                 state.spawned_children.insert(cid.clone(), pid);
                 child_spawns.remove(&cid);
                 info!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     child = %cid,
                     pid,
                     attempts,
@@ -1779,14 +1779,14 @@ fn reconcile_child_spawns(
                 let exhausted = attempts >= CHILD_SPAWN_MAX_ATTEMPTS;
                 if exhausted {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         child = %cid,
                         attempts,
                         "child supervisor never confirmed a pid; retry budget exhausted, giving up"
                     );
                 } else {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         child = %cid,
                         attempts,
                         "child supervisor did not confirm a pid within the deadline; scheduling retry"
@@ -1817,7 +1817,7 @@ fn reconcile_child_spawns(
                 match fork_child_supervisor(root, &cid) {
                     Ok(()) => {
                         info!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             child = %cid,
                             attempt = next,
                             "re-forked child supervisor after a failed boot"
@@ -1832,7 +1832,7 @@ fn reconcile_child_spawns(
                     }
                     Err(e) => {
                         warn!(
-                            target: "orchestratectl::supervise",
+                            target: "taskfleet::supervise",
                             child = %cid,
                             attempt = next,
                             error = %e.message,
@@ -1910,7 +1910,7 @@ fn fork_child_supervisor(root: &Path, child_run_id: &str) -> Result<(), CliError
     cmd.env_remove("RUST_LOG_NOSPAWN");
     crate::run::supervisor_spawn::spawn_and_reap(&mut cmd, child_run_id)?;
     info!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         child = %child_run_id,
         "forked child supervisor (pid confirmation deferred to reconcile)"
     );
@@ -1947,7 +1947,7 @@ fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPath
                 // the attach on the parent log, so the child projection update
                 // is a convenience the next reattach can re-derive.
                 warn!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     child = %child_run_id,
                     error = %e,
                     "could not record supervisor.attached on child run"
@@ -1955,7 +1955,7 @@ fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPath
             }
         }
         Err(e) => warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             child = %child_run_id,
             error = %e.message,
             "could not resolve child run paths to record supervisor.attached (parent record still emitted)"
@@ -1971,7 +1971,7 @@ fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPath
         json!({"child_run_id": child_run_id, "supervisor_pid": pid}),
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             child = %child_run_id,
             error = %e,
             "could not record child.supervisor_attached on parent run"
@@ -2055,7 +2055,7 @@ fn report_corrupt_line(
         return;
     };
     warn!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         source = %source,
         byte_offset = c.byte_offset,
         excerpt = %c.line_excerpt,
@@ -2073,7 +2073,7 @@ fn report_corrupt_line(
                 // already-consumed events are skipped, not reprocessed.
                 tail.restart();
                 info!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     source = %source,
                     backup = %q.backup_path.display(),
                     removed = q.removed_byte_offsets.len(),
@@ -2091,7 +2091,7 @@ fn report_corrupt_line(
                     }),
                 ) {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         source = %source,
                         error = %e,
                         "failed to persist quarantine diagnostic (log already healed)"
@@ -2106,7 +2106,7 @@ fn report_corrupt_line(
             }
             Err(e) => {
                 warn!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     source = %source,
                     error = %e,
                     "quarantine failed; falling back to in-memory skip"
@@ -2132,7 +2132,7 @@ fn report_corrupt_line(
         // keep the tail progressing; surface the failure rather than silently
         // dropping the only record of it.
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             source = %source,
             byte_offset = c.byte_offset,
             error = %e,
@@ -2173,7 +2173,7 @@ fn maybe_warn_dropped(
     }
     let newly_dropped = current - *last_count;
     warn!(
-        target: "orchestratectl::supervise",
+        target: "taskfleet::supervise",
         dropped = current,
         newly_dropped,
         "log events dropped due to buffer overflow (lossy non-blocking appender under sustained back-pressure)"
@@ -2320,7 +2320,7 @@ fn reconcile_agent_retries(
             Ok(g) => g,
             Err(e) => {
                 warn!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     node = %node_id, error = %e,
                     "could not lock run to reconcile retry; will retry next tick"
                 );
@@ -2335,7 +2335,7 @@ fn reconcile_agent_retries(
         });
         if !proceed {
             info!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id,
                 "retry park no longer applies (terminal / not empty-handed); dropping"
             );
@@ -2351,7 +2351,7 @@ fn reconcile_agent_retries(
 
         let Some(manifest) = manifest else {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, "manifest unreadable during retry; will retry next tick"
             );
             continue;
@@ -2381,7 +2381,7 @@ fn reconcile_agent_retries(
                     .map_or(1, |p| p.spawn_failures + 1);
                 if failures >= agent_respawn_max_failures() {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         node = %node_id, error = %e.message, failures,
                         "re-spawn failed repeatedly; terminalizing run failed"
                     );
@@ -2394,7 +2394,7 @@ fn reconcile_agent_retries(
                     }
                 } else if let Some(park) = retry_states.get_mut(&node_id) {
                     warn!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         node = %node_id, error = %e.message, failures,
                         "re-spawn failed; backing off and rescheduling"
                     );
@@ -2415,7 +2415,7 @@ fn reconcile_agent_retries(
             Ok(g) => g,
             Err(e) => {
                 warn!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     node = %node_id, error = %e,
                     "could not lock run to record node.retry; tearing down fresh spawn, will retry"
                 );
@@ -2439,7 +2439,7 @@ fn reconcile_agent_retries(
                 matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
             });
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, terminal,
                 "node no longer retryable after re-spawn (terminal or committed work appeared); \
                  tearing down fresh spawn, dropping park"
@@ -2467,7 +2467,7 @@ fn reconcile_agent_retries(
             append_and_apply_unlocked(&lock, paths, "node.retry", Some(&nid), None, data)
         {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "record node.retry failed; tearing down fresh spawn, leaving park to re-fire"
             );
@@ -2488,7 +2488,7 @@ fn reconcile_agent_retries(
         // deletes if commits somehow appeared — never destroying committed work).
         cleanup::cleanup_node(paths, &node, &tmux, &git);
         info!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id, attempt, branch = %spawn.branch,
             "re-spawned empty-handed worker on fresh worktree at source branch"
         );
@@ -2737,7 +2737,7 @@ fn terminalize_respawn_failure(
         Ok(g) => g,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "could not lock run to terminalize failed re-spawn; will retry next tick"
             );
@@ -2776,7 +2776,7 @@ fn terminalize_respawn_failure(
         Ok(_) => true,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "synthesize failed re-spawn report failed; will retry next tick"
             );
@@ -2805,7 +2805,7 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
         Ok(g) => g,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "could not lock run to terminalize told worker-exit failure; will retry next tick"
             );
@@ -2867,7 +2867,7 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
     let lock = guard.witness();
     if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id, error = %e,
             "synthesize told worker-exit failed report failed; will retry next tick"
         );
@@ -2885,7 +2885,7 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
 const DEATH_GRACE: Duration = Duration::from_secs(5);
 
 /// Env override for [`DEATH_GRACE`] (whole seconds; unparseable → default).
-const DEATH_GRACE_ENV: &str = "OCTL_DEATH_GRACE_SECS";
+const DEATH_GRACE_ENV: &str = "TASKFLEET_DEATH_GRACE_SECS";
 
 /// The effective post-death grace, honoring [`DEATH_GRACE_ENV`].
 fn death_grace() -> Duration {
@@ -2920,7 +2920,7 @@ fn record_death_observed(
         Ok(g) => g,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "could not lock run to record first-death observation; will retry next tick"
             );
@@ -2950,7 +2950,7 @@ fn record_death_observed(
         json!({}),
     ) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id, error = %e,
             "failed to record first-death observation; will retry next tick"
         );
@@ -2993,7 +2993,7 @@ fn synthesize_crash_backstop_failure(
         Ok(g) => g,
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = %node_id, error = %e,
                 "watchdog could not lock run to synthesize crash-backstop report"
             );
@@ -3013,7 +3013,7 @@ fn synthesize_crash_backstop_failure(
     });
     if !still_synthesizable {
         tracing::debug!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id,
             "crash backstop deferred to a told exit / report / merge / retry that landed in the grace window"
         );
@@ -3035,7 +3035,7 @@ fn synthesize_crash_backstop_failure(
                     let attempt = attempts + 1;
                     let backoff = agent_retry_backoff(attempt);
                     info!(
-                        target: "orchestratectl::supervise",
+                        target: "taskfleet::supervise",
                         node = %node_id,
                         attempt,
                         backoff_secs = backoff.as_secs(),
@@ -3054,7 +3054,7 @@ fn synthesize_crash_backstop_failure(
                     return;
                 }
                 info!(
-                    target: "orchestratectl::supervise",
+                    target: "taskfleet::supervise",
                     node = %node_id,
                     attempts,
                     max,
@@ -3073,7 +3073,7 @@ fn synthesize_crash_backstop_failure(
         .and_then(|f| cleanup::node_recoverability(paths, f, git));
     if let Some(r) = &recoverability {
         info!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id,
             branch = %r.branch,
             unmerged_commits = r.unmerged_commits,
@@ -3109,7 +3109,7 @@ fn synthesize_crash_backstop_failure(
     let lock = guard.witness();
     if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             node = %node_id,
             error = %e,
             "synthesize crash-backstop node.report failed"
@@ -3151,7 +3151,7 @@ fn watchdog_tick(
         Ok(None) => return Ok(()),
         Err(e) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 error = %e,
                 "watchdog could not read manifest; skipping tick (fail-closed)"
             );
@@ -3566,10 +3566,10 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn agent_retry_backoff_is_bounded_and_monotone() {
         // Serialized against the retry integration tests (which set
-        // `OCTL_AGENT_RETRY_BACKOFF_SECS`) and defensively cleared, so this reads
+        // `TASKFLEET_AGENT_RETRY_BACKOFF_SECS`) and defensively cleared, so this reads
         // the compiled default rather than a value another test left set.
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global
@@ -3943,7 +3943,7 @@ mod tests {
     // These drive `watchdog_tick` directly (no real `supervise` subprocess, so no
     // `#[file_serial]` is required) against a real git repo whose spinoff branch
     // has already self-merged into `main`, with the terminal `node.report` never
-    // emitted. They serialize on the process-global `OCTL_WATCHDOG_GRACE_SECS`
+    // emitted. They serialize on the process-global `TASKFLEET_WATCHDOG_GRACE_SECS`
     // they set (grace 0, so a just-created node is eligible immediately).
 
     use std::process::{Command as PCommand, Stdio};
@@ -3952,7 +3952,7 @@ mod tests {
     static GRACE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII env guard: restores the prior values / unsets on drop so a panicking
-    /// assertion cannot leak `OCTL_WATCHDOG_GRACE_SECS` or `OCTL_DEATH_GRACE_SECS`
+    /// assertion cannot leak `TASKFLEET_WATCHDOG_GRACE_SECS` or `TASKFLEET_DEATH_GRACE_SECS`
     /// into another test. Zeroes BOTH graces so the residual crash backstop fires
     /// on the same tick it confirms death (design.md §2.1a) — with a non-zero
     /// death grace the backstop deliberately defers a tick, which these
@@ -4178,7 +4178,7 @@ mod tests {
     /// its pid is provably gone. This is exactly the safety-net case the thin model
     /// converts from a wrong terminal verdict into a visible, resumable state.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn worker_exit_zero_without_merge_stays_non_terminal() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4229,7 +4229,7 @@ mod tests {
     /// interactive run — no report, node stays non-terminal, the human owns the
     /// lifecycle and finalizes via an explicit `run merge` / `run cancel`.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn interactive_run_ignores_dead_pid() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4267,7 +4267,7 @@ mod tests {
     /// terminalize an interactive run. The human may have quit/restarted the agent;
     /// only an explicit `run merge` / `run cancel` ends an interactive run.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn interactive_run_ignores_worker_exit_failure() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4310,7 +4310,7 @@ mod tests {
     /// future refactor that moves rollup/recovery inside the tick and strands an
     /// interactive merge.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn interactive_run_explicit_merge_still_rolls_up_and_tears_down() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4362,7 +4362,7 @@ mod tests {
     /// code stamped, no `explicit-merge` marker (so invariant 5 preserves the
     /// branch), and NOT parked for empty-handed auto-retry.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn worker_exit_nonzero_terminalizes_failed() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4409,7 +4409,7 @@ mod tests {
     /// typed `failed` outcome, distinguished by a `worker-killed-by-signal` reason
     /// with the signal number stamped.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn worker_exit_signal_terminalizes_failed() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4443,7 +4443,7 @@ mod tests {
     /// be resurrected/overridden to `failed` by the late told-failure — the merge
     /// wins (design.md §2.6: merge is the only success truth, and it is terminal).
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn worker_exit_nonzero_after_merge_keeps_done() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         let _env_lock = crate::harness::support::test_env::lock();
@@ -4526,7 +4526,7 @@ EOF
     }
 
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn profile_retry_uses_recorded_candidate_and_absolute_attempt() {
         let _env_lock = crate::harness::support::test_env::lock();
         let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
@@ -4540,7 +4540,7 @@ EOF
         std::fs::write(
             &worker,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"$#\" \"$@\" > '{}'\nexec sleep 120\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$TASKFLEET_RUN_ID\" \"$TASKFLEET_NODE_ID\" \"$TASKFLEET_ATTEMPT\" \"$#\" \"$@\" > '{}'\nexec sleep 120\n",
                 observed.display()
             ),
         )
@@ -4571,13 +4571,13 @@ EOF
         let wt_root = tmp.path().join("respawn-wts");
         std::fs::create_dir_all(&wt_root).unwrap();
         let stub = write_respawn_stub(tmp.path(), &repo, &wt_root);
-        let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
+        let _create = EnvGuard::set("TASKFLEET_CREATE_SH", stub.to_str().unwrap());
         // Even unusable current config cannot affect retry: only the manifest
         // selection above reaches respawn_agent.
         let config_home = tmp.path().join("config-home");
         std::fs::create_dir_all(&config_home).unwrap();
         std::fs::write(config_home.join("config.toml"), "not valid toml = [").unwrap();
-        let _home = EnvGuard::set("ORCHESTRATECTL_HOME", config_home.to_str().unwrap());
+        let _home = EnvGuard::set("TASKFLEET_HOME", config_home.to_str().unwrap());
         // A unit-test process's current_exe is Rust's test harness, not the CLI
         // binary. This absolute debug-only fixture preserves the generated
         // self-exec argument boundary, then forwards the candidate after `--`.
@@ -4590,7 +4590,7 @@ EOF
         let mut perms = std::fs::metadata(&self_exe).unwrap().permissions();
         perms.set_mode(0o700);
         std::fs::set_permissions(&self_exe, perms).unwrap();
-        let _self_exe = EnvGuard::set("OCTL_TEST_SELF_EXE", self_exe.to_str().unwrap());
+        let _self_exe = EnvGuard::set("TASKFLEET_TEST_SELF_EXE", self_exe.to_str().unwrap());
 
         let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
         let expected = format!("{}\nn-0001\n3\n2\n--\nretry prompt\n", manifest.run_id);
@@ -4615,7 +4615,7 @@ EOF
     /// `node.retry` event, `retry_attempts` incremented, node NOT terminalized),
     /// and the re-spawned worker then self-merges → the run reconciles to SUCCESS.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn empty_handed_death_retries_and_then_succeeds() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global
@@ -4627,7 +4627,7 @@ EOF
         // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
         let _env_lock = crate::harness::support::test_env::lock();
         // Share the create.sh env lock with `run::spawn::tests` so our global
-        // `OCTL_CREATE_SH` mutation cannot race their fixtures.
+        // `TASKFLEET_CREATE_SH` mutation cannot race their fixtures.
         let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
         let _grace = GraceGuard::zero();
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
@@ -4645,7 +4645,7 @@ EOF
         let wt_root = tmp.path().join("respawn-wts");
         std::fs::create_dir_all(&wt_root).unwrap();
         let stub = write_respawn_stub(tmp.path(), &repo, &wt_root);
-        let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
+        let _create = EnvGuard::set("TASKFLEET_CREATE_SH", stub.to_str().unwrap());
 
         let mut retries = std::collections::BTreeMap::new();
         // One tick with backoff 0: detect death → park → reconcile → re-spawn.
@@ -4716,7 +4716,7 @@ EOF
     /// so the next empty-handed death crosses the budget and writes the terminal
     /// failed report, stamped with the retry count.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn empty_handed_death_terminalizes_failed_after_max_attempts() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global
@@ -4784,7 +4784,7 @@ EOF
     /// `failed` with the `recoverable_work` signal (not a retry), and no park is
     /// scheduled, so a re-spawn from base can never clobber the committed branch.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn committed_work_death_is_not_retried_and_preserves_salvage_signal() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global
@@ -4854,7 +4854,7 @@ EOF
     /// forever. The stale worktree survives each failed spawn (spawn-before-teardown),
     /// so the empty-handed re-verify keeps holding and the budget is real.
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn respawn_infrastructure_failure_terminalizes_after_budget() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global
@@ -4879,7 +4879,7 @@ EOF
         let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid);
         std::fs::write(paths.root.join("prompt.md"), "do the thing").unwrap();
         let stub = write_failing_stub(tmp.path());
-        let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
+        let _create = EnvGuard::set("TASKFLEET_CREATE_SH", stub.to_str().unwrap());
 
         let mut retries = std::collections::BTreeMap::new();
 
@@ -4918,7 +4918,7 @@ EOF
     /// It falls through to the terminal `agent-died` report (whose blocked-handoff
     /// gate preserves the worktree).
     #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
+    #[serial_test::serial(taskfleet_watchdog_grace)]
     fn dirty_worktree_death_is_not_retried() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
         // Also hold the crate-wide env lock: these tests read/mutate process-global

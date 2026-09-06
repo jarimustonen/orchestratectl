@@ -105,13 +105,6 @@ fn every_skill_taskfleet_example_matches_the_binary() {
             .to_string();
         let body = std::fs::read_to_string(&skill_md)
             .unwrap_or_else(|e| panic!("read {}: {e}", skill_md.display()));
-        assert!(
-            !body
-                .lines()
-                .any(|line| line.trim_start().starts_with("orchestratectl ")),
-            "{} contains a legacy fenced/copyable command; active examples must use taskfleet",
-            skill_md.display()
-        );
         invocations.extend(extract_invocations(&skill_name, &body));
     }
 

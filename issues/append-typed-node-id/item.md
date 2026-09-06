@@ -4,7 +4,7 @@ updated: 2026-06-28
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 related: ['@id-canonical-form-validation']
 closed: 2026-06-28
 commits:
@@ -12,9 +12,9 @@ commits:
   summary: 'refactor(core): typed node id + reducer plan-then-commit + corrupt-state error class'
 ---
 
-# octl-core: append API should take Option<&NodeId> instead of Option<&str>
+# taskfleet-core: append API should take Option<&NodeId> instead of Option<&str>
 
-_Source: crates/octl-core/src/events.rs_
+_Source: crates/taskfleet-core/src/events.rs_
 
 ## Description
 

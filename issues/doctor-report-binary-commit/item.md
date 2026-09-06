@@ -19,11 +19,11 @@ commits:
 
 ## Observed (twice in one session, 2026-08-17)
 
-`orchestratectl doctor` reported **0 warn / 0 fail** while running a binary that was several
+`taskfleet doctor` reported **0 warn / 0 fail** while running a binary that was several
 commits behind the repo, validating bundled skills that the same stale binary had installed.
 
-Sequence: a worker ran `cargo install --path crates/octl-cli` from inside its worktree,
-which replaced `~/.cargo/bin/orchestratectl` and recorded the worktree as the install source.
+Sequence: a worker ran `cargo install --path crates/taskfleet-cli` from inside its worktree,
+which replaced `~/.cargo/bin/taskfleet` and recorded the worktree as the install source.
 When that worktree was torn down the binary later disappeared entirely. `~/.cargo/bin`
 precedes `/opt/homebrew/bin` on PATH, so invocations silently fell through to the **Homebrew
 tap build from an older release**. That stale binary then reinstalled its own (pre-migration)
@@ -58,9 +58,9 @@ i.e. the same hazard class is already modelled in a sibling tool.
 ## Interim mitigation (already landed)
 
 `AGENTS.md`'s deploy bullet now requires asserting
-`orchestratectl version --output json | jq -r .data.commit` equals `git rev-parse HEAD` after
+`taskfleet version --output json | jq -r .data.commit` equals `git rev-parse HEAD` after
 `cargo install`, and workers are prohibited from global installs (they build and run
-`./target/release/orchestratectl` from their own worktree). This issue is about making the
+`./target/release/taskfleet` from their own worktree). This issue is about making the
 tool disclose it rather than relying on the operator remembering the check.
 
 ## Resolution

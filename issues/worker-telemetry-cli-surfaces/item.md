@@ -6,13 +6,13 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
-source_ref: orchestratectl:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:endpoint
+source_ref: taskfleet:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:endpoint
 originating_run: 01m0ncfdymcb0y72241p4q8nsz
 originating_run_kind: spinoff
 lane: worker-control-plane
 lane_seq: 20
 blocked_by: ['@worker-telemetry-core-control']
-collision: [octl-core-schema, run-show-dto, run-list-dto]
+collision: [taskfleet-core-schema, run-show-dto, run-list-dto]
 closed: 2026-08-24
 commits:
 - hash: e29aa47
@@ -27,7 +27,7 @@ Expose the approved harness-neutral telemetry update endpoint and compact freshn
 
 ## Scope
 
-- Add one strict `orchestratectl node telemetry update` command accepting either payload flags or `--input-file <PATH|->`, never both.
+- Add one strict `taskfleet node telemetry update` command accepting either payload flags or `--input-file <PATH|->`, never both.
 - Reject raw input larger than 4 KiB before normalization or mutation, normalize the versioned request into the core update DTO, and return the standard JSON envelope with receive and expiry timestamps.
 - Add per-node telemetry to `run show`: sample state, last-told activity, age, state elapsed time, attempt, and bounded tool metadata.
 - Add only bounded sample-state counts to `run list`.

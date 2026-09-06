@@ -23,7 +23,7 @@ prefer it, but deliberately left the legacy `via: "explicit-merge"` string as th
 authority for two OTHER surfaces (out of scope for that issue, which scoped
 teardown/reducer via-semantics as unchanged):
 
-- The octl-core reducer's confirmed-explicit-merge **adoption against a terminal
+- The taskfleet-core reducer's confirmed-explicit-merge **adoption against a terminal
   node** (`reducer.rs::report_is_confirmed_explicit_merge`) keys on `via`.
 - `run wait`'s `landed`/`merged` **report-marker fallback** (`run/landed.rs`) keys
   on `via` when git cannot verify.

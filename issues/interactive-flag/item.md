@@ -26,7 +26,7 @@ Interactivity is no longer a run kind. The flag means the supervisor never auto-
 Likely touches `run create`, schema/state carried in the manifest, harness selection, supervise semantics, docs, and bundled skills that spawn runs.
 
 ## Done criteria
-- `orchestratectl run create --interactive ...` persists explicit how-run state.
+- `taskfleet run create --interactive ...` persists explicit how-run state.
 - Supervisor semantics match the design: no auto terminalization/teardown from pid death alone in interactive mode.
 - CLI docs/snapshots and bundled skills are updated.
 - Full project green gate and relevant insta snapshot loop pass, including docs.

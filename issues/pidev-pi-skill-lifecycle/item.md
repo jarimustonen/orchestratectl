@@ -18,7 +18,7 @@ commits:
 
 ## Problem
 
-`orchestratectl skill install` now dual-homes each skill's `SKILL.md` into
+`taskfleet skill install` now dual-homes each skill's `SKILL.md` into
 `~/.pi/agent/skills/<name>/` (issue `pidev-dual-home-skills`). That mirror has
 **no lifecycle management**:
 
@@ -32,17 +32,17 @@ commits:
 
 ## Constraint that blocks the naive fix
 
-`pidev-dual-home-skills` deliberately forbids the `.orchestratectl-managed`
+`pidev-dual-home-skills` deliberately forbids the `.taskfleet-managed`
 marker in the pi dir. Without a provenance signal we **cannot** distinguish an
-orchestratectl-left-behind pi dir from a user's own hand-authored pi skill — so a
+taskfleet-left-behind pi dir from a user's own hand-authored pi skill — so a
 naive "pi orphan" warning would false-positive on every user skill. This is why
 orphan handling was deferred rather than bolted on.
 
 ## Ask
 
 Design an **out-of-band provenance record** (e.g.
-`~/.orchestratectl/state/pi-installed-skills.json`, recording names + content
-hashes orchestratectl wrote to pi), then build on it:
+`~/.taskfleet/state/pi-installed-skills.json`, recording names + content
+hashes taskfleet wrote to pi), then build on it:
 
 1. Prune pi mirrors of de-registered skills, gated on `--force` like the claude
    prune, but keyed on the provenance record (never touch dirs we didn't write).

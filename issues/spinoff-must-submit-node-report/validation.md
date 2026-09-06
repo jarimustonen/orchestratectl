@@ -10,8 +10,8 @@ correct rather than copy.
 The issue body and the old `worktree-orchestrated` SKILL documented the
 payload as `success`, `discuss[]` (with `chosen_path`),
 `spinoff_candidates[]`, `wrap_up[]`. The **real** §7.3 schema enforced by
-`octl-core/src/report.rs` (`validate_report_payload`) and consumed by the
-supervisor (`octl-cli/src/supervise/reducer.rs`) is:
+`taskfleet-core/src/report.rs` (`validate_report_payload`) and consumed by the
+supervisor (`taskfleet-cli/src/supervise/reducer.rs`) is:
 
 - `success` — required boolean
 - `summary` — optional string
@@ -36,7 +36,7 @@ names gets warned.
 ## 2. `node report` is a write verb; reads use `node show`
 
 Several "Following progress" sections pointed at
-`orchestratectl node report <node-id>` as the way to *read* a submitted
+`taskfleet node report <node-id>` as the way to *read* a submitted
 report. With the current CLI that subcommand **requires** `--from-file`
 and *writes* a report; reading a node's projection is `node show <id>`.
 Fixed in `worktree-spinoff`, `worktree-orchestrated`, and `fan-out`.
@@ -57,12 +57,12 @@ does not linger at `pending` either.
 The spawner cannot inject the run id into the `--task` brief — the brief
 is consumed by the `run create` call that *generates* the run id. The
 agent must discover it at runtime. `derive_branch_name`
-(`octl-cli/src/run/create.rs`) names the branch `wt/<short>-<slug>` where
+(`taskfleet-cli/src/run/create.rs`) names the branch `wt/<short>-<slug>` where
 `<short>` is the first 10 alphanumerics of the run id, so:
 
 ```bash
 short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+run_id="$(ls -1 ~/.taskfleet/runs/ | grep -m1 "^${short}")"
 ```
 
 is the authoritative recipe baked into every SKILL. Node id is `n-0001`
@@ -82,10 +82,10 @@ this very spinoff (run `01kw7btqhpdgjeh55zga7wghjs`):
   run or exit on an agent-submitted terminal report.
 
 Root cause (read from source): `reduce_node_report`
-(`octl-core/src/reducer.rs`) terminalizes only the node projection;
+(`taskfleet-core/src/reducer.rs`) terminalizes only the node projection;
 nothing rolls it up to the run manifest status or emits a `run.status`
 event. The supervisor's `all_work_done` keys off the **manifest**
-status, which only `run cancel` (`octl-core/src/cancel.rs`) ever sets.
+status, which only `run cancel` (`taskfleet-core/src/cancel.rs`) ever sets.
 The watchdog synthesizes reports only for **non-terminal** nodes whose
 agent died, so an already-terminal node is skipped — even agent death
 emits no `run.status`.

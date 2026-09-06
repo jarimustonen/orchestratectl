@@ -15,7 +15,7 @@ Agents have full normal rights. V1 has no permission sets, operation sets,
 `restricted-local` ceiling, tool filtering, command sandbox, trusted launch
 composition, or mechanical no-spawn eligibility gate. The existing local
 `secure` role is usable with normal rights. Its behavior depends on its
-user-configured model and instructions; orchestratectl makes no no-spawn or
+user-configured model and instructions; taskfleet makes no no-spawn or
 restricted-local guarantee. Stronger enforcement may be designed later if a
 real need justifies it, but it is not a v1 requirement or claim.
 
@@ -30,18 +30,18 @@ The remaining hard boundaries are:
 
 Telemetry remains advisory as defined by the telemetry design. It may inform the
 calling agent's judgment but cannot itself create success, failure, retry,
-settlement, or teardown truth inside orchestratectl.
+settlement, or teardown truth inside taskfleet.
 
 ## 2. Configuration ownership
 
 Executable profile definitions exist only in user config:
 
 ```text
-$ORCHESTRATECTL_HOME/config.toml
-# normally ~/.orchestratectl/config.toml
+$TASKFLEET_HOME/config.toml
+# normally ~/.taskfleet/config.toml
 ```
 
-Repository config at `<repo-root>/.orchestratectl.toml` may select a profile by
+Repository config at `<repo-root>/.taskfleet.toml` may select a profile by
 name, including per-kind selection, but must reject profile definitions,
 commands, argv fragments, adapter paths, and residency reclassification. This
 prevents a checkout from defining what executable the user runs without adding a
@@ -52,7 +52,7 @@ or other global harness settings. The selected command is invoked per spawn.
 
 The user is the authority for a profile's residency declaration. `local` means
 that the configured agent is intended to keep payloads on the machine;
-orchestratectl enforces only that fallback does not cross to a `remote` profile
+taskfleet enforces only that fallback does not cross to a `remote` profile
 or candidate. V1 does not claim network confinement or verify model quality.
 
 ## 3. Profile model
@@ -65,7 +65,7 @@ description = "General-purpose high-capability work"
 capability = "capable"
 residency = "remote"
 agents = [
-  { harness = "pi", command = ["pi", "-e", "/Users/me/.pi/extensions/octl-telemetry.js", "--model", "example"], telemetry = "worker-v1" },
+  { harness = "pi", command = ["pi", "-e", "/Users/me/.pi/extensions/taskfleet-telemetry.js", "--model", "example"], telemetry = "worker-v1" },
   { harness = "claude", command = ["claude", "--model", "example"] },
 ]
 
@@ -74,7 +74,7 @@ description = "Local model for contained tasks"
 capability = "fast"
 residency = "local"
 agents = [
-  { harness = "pi", command = ["pi-gemma", "-e", "/Users/me/.pi/extensions/octl-telemetry.js"], telemetry = "worker-v1" },
+  { harness = "pi", command = ["pi-gemma", "-e", "/Users/me/.pi/extensions/taskfleet-telemetry.js"], telemetry = "worker-v1" },
 ]
 ```
 
@@ -109,14 +109,14 @@ losing any enforced restriction.
 Selection uses the first non-empty source in this order:
 
 1. CLI `--profile` (or the existing explicit legacy `--harness` path);
-2. `ORCHESTRATECTL_PROFILE` (or legacy `ORCHESTRATECTL_HARNESS`);
+2. `TASKFLEET_PROFILE` (or legacy `TASKFLEET_HARNESS`);
 3. repository `profile.per_kind.<kind>`;
 4. user `profile.per_kind.<kind>` or legacy `harness.per_kind.<kind>` alias;
 5. repository `profile.default`;
 6. user `profile.default` or legacy `harness.default` alias; and
 7. otherwise an actionable missing-profile error.
 
-Legacy `--harness`, `ORCHESTRATECTL_HARNESS`, and an existing user
+Legacy `--harness`, `TASKFLEET_HARNESS`, and an existing user
 `harness.default` remain selection aliases only: each names a matching
 user-owned profile definition and cannot synthesize built-in argv. A legacy
 harness alias also requires every candidate in the named profile to use that
@@ -154,7 +154,7 @@ For autonomous use, v1 eligibility is exactly:
 - `telemetry = "worker-v1"`.
 
 This declares that the user-configured pi command launches the approved adapter.
-Orchestratectl does not add package attestation, trusted roots, probe executables,
+Taskfleet does not add package attestation, trusted roots, probe executables,
 ambient-extension suppression, operation restrictions, or a second launch
 contract. If the command or adapter later fails, existing launch/worker failure
 disclosure reports it.
@@ -195,7 +195,7 @@ A successful create records a compact, versioned choice:
   "selected": {
     "candidate_index": 0,
     "harness": "pi",
-    "command": ["pi", "-e", "/Users/me/.pi/extensions/octl-telemetry.js", "--model", "example"],
+    "command": ["pi", "-e", "/Users/me/.pi/extensions/taskfleet-telemetry.js", "--model", "example"],
     "telemetry": "worker-v1"
   },
   "fallback": []
@@ -250,7 +250,7 @@ and does not need additional provenance machinery.
 
 The existing user-owned local `secure` role participates in the same rules and
 is usable with normal rights. Autonomous use requires a pi candidate with the
-adapter; explicit-interactive use does not. Orchestratectl makes no “restricted,”
+adapter; explicit-interactive use does not. Taskfleet makes no “restricted,”
 “sandboxed,” or “cannot spawn” claim. Its behavior comes from the configured
 model and instructions, not enforced policy.
 

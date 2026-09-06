@@ -15,13 +15,13 @@ closed: 2026-07-25
 ## Resolution (2026-07-25) — both adapters fixed and live-verified
 
 Live-verified against real binaries (aider 0.86.2, pi 0.82.0) with a DeepSeek
-backend via `orchestratectl harness bakeoff --only aider --only pi`. Both now
+backend via `taskfleet harness bakeoff --only aider --only pi`. Both now
 report **committed**.
 
 ### pi — exit-1 root cause: unsupported `--` terminator
 The adapter appended `--` as an option terminator, but pi's parser rejects it
 (`Error: Unknown option: --`) and exits non-zero. Fix: drop `--`, pass the prompt
-as the sole trailing positional (`crates/octl-cli/src/harness/pi.rs`). Also added a
+as the sole trailing positional (`crates/taskfleet-cli/src/harness/pi.rs`). Also added a
 leading-space guard for a dash-leading brief (pi has no `--` escape). Live-verified:
 pi reaches the model and produces a committed result whose self-check passes. Note
 pi exits 0 even on an auth error, so `--` was the *only* cause of the non-zero exit.

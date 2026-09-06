@@ -31,7 +31,7 @@ Use `issues/worker-control-plane-review/integration-review.md` post-decision ass
 - Accept them from `untriaged` to `open` because Jari approved proceeding through the described implementation steps.
 - Create one clear profile configuration/resolver implementation issue for user-owned executable definitions, capability/residency profiles, deterministic non-weakening fallback, and compact requested/selected visibility.
 - Define explicit dependencies and conservative lane/collision metadata. Sequence shared state schema, reducer, run-create, config, and DTO hot surfaces; do not rely on optimistic lane disjointness.
-- Represent the external pi adapter as an external-package deliverable with a documented repository/package boundary. Do not put pi-specific internals into orchestratectl.
+- Represent the external pi adapter as an external-package deliverable with a documented repository/package boundary. Do not put pi-specific internals into taskfleet.
 - Make end-to-end rollout depend on every implementation prerequisite.
 - Close this planning issue when the DAG validates.
 

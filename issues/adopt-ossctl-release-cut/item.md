@@ -18,7 +18,7 @@ commits:
 ## Why
 
 Releases here are still cut by hand: every cut needs a dedicated spinoff whose whole job is
-to finalize the CHANGELOG, bump the workspace version, rewrite the `octl-core` pin, refresh
+to finalize the CHANGELOG, bump the workspace version, rewrite the `taskfleet-core` pin, refresh
 `Cargo.lock`, and regenerate the `version_*` snapshots. Two such spinoffs ran on 2026-08-18
 alone (v0.4.0, v0.4.1).
 
@@ -30,7 +30,7 @@ round.
 ## What to do
 
 1. Wire `ossctl release plan --bump` into the release flow for the two-crate workspace
-   (`octl-core` first, then `orchestratectl` with its `=<version>` pin).
+   (`taskfleet-core` first, then `taskfleet` with its `=<version>` pin).
 2. **Settle the division of labour with the tag-triggered pipeline.** This repo publishes
    from CI on a `vX.Y.Z` tag (`publish-crates.yml`), and a local `cargo publish` is
    forbidden. ossctl must own the bump/changelog/tag phases without duplicating or bypassing

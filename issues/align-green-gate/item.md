@@ -11,12 +11,12 @@ closed: 2026-08-18
 
 ## Description
 
-Align worker verification guidance with the actual CI commands and prohibit global orchestratectl installs from worktrees.
+Align worker verification guidance with the actual CI commands and prohibit global taskfleet installs from worktrees.
 
 ## Acceptance Criteria
 
 - [x] Root and bundled-worker guidance use the locked release-mode CI gate.
-- [x] Workers use worktree-local release binaries and never install orchestratectl globally.
+- [x] Workers use worktree-local release binaries and never install taskfleet globally.
 - [x] Orchestrator deploy verification compares the installed binary's commit to `HEAD`.
 
 ## Resolution

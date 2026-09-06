@@ -56,11 +56,11 @@ but not in the pi install:
 └── SKILL.md
 ```
 
-`orchestratectl doctor` reported the companion sync as OK because it appears to validate the Claude install path, not the pi.dev skill path.
+`taskfleet doctor` reported the companion sync as OK because it appears to validate the Claude install path, not the pi.dev skill path.
 
 ## Expected behavior
 
-`orchestratectl skill install` and `orchestratectl doctor` should support pi.dev as a first-class agent runtime.
+`taskfleet skill install` and `taskfleet doctor` should support pi.dev as a first-class agent runtime.
 
 At minimum:
 
@@ -83,7 +83,7 @@ On a machine with pi.dev skills under `~/.pi/agent/skills/`:
 A manual workaround exists:
 
 ```bash
-orchestratectl skill install stint-start \
+taskfleet skill install stint-start \
   --dest /Users/jari/.pi/agent/skills/stint-start/SKILL.md \
   --force
 ```

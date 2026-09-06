@@ -6,7 +6,7 @@ The failure mode (3× on 2026-08-10 under FS/CPU saturation): a run left at
 `status: pending`, `node_count == 0`, dead/absent supervisor, `updated_at ==
 created_at`, an orphaned base-main worktree with 0 commits — a **stillborn** run.
 
-Tracing the create path (`crates/octl-cli/src/run/create.rs`):
+Tracing the create path (`crates/taskfleet-cli/src/run/create.rs`):
 
 - For a **top-level worker** (e.g. `--kind spinoff`), `run create` runs
   synchronously: emit `run.created` → `create.sh` (worktree + tmux + agent, up
@@ -64,7 +64,7 @@ shared lock).
   process is mid-`run create` on (the incident's own parallel-wave context) — a
   monitor over `run list --json` could flag/cancel a healthy run. **Fix:** an
   age gate in `list.rs` only (`STILLBORN_LIST_GRACE_SECS`, default 900s = the
-  supervisor's own no-worker grace; `OCTL_STILLBORN_LIST_GRACE_SECS` override).
+  supervisor's own no-worker grace; `TASKFLEET_STILLBORN_LIST_GRACE_SECS` override).
   `is_stillborn` itself stays grace-free — `run wait` must settle promptly (a
   grace would re-break `run-wait-stillborn-run-not-detected`), and `show`/`wait`
   are called on a specific run whose create already returned, so 0 nodes there

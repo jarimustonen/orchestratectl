@@ -17,7 +17,7 @@ this issue's scope. Captured here for future issues to pick up.
 **Raised by:** Gemini, GPT-5.5
 **Severity:** correctness — log-only orphan reference
 
-`crates/octl-cli/src/run/create.rs` follows design.md §7.2 step 3 → 4
+`crates/taskfleet-cli/src/run/create.rs` follows design.md §7.2 step 3 → 4
 ordering: append `child.spawned` to the parent's events.jsonl first,
 then create the child dir + write `run.created`. If step 4 fails (out
 of inodes, permissions, kill -9 between steps), the parent's append-
@@ -72,7 +72,7 @@ marking this as deferred.
 **Raised by:** Gemini, GPT-5.5
 **Severity:** correctness — concurrent retry can create two runs
 
-`crates/octl-cli/src/idempotency.rs` does lookup → create-run →
+`crates/taskfleet-cli/src/idempotency.rs` does lookup → create-run →
 store-key. Two concurrent `run create --idempotency-key K` calls can
 both miss the lookup and both create different runs; last writer wins
 the key file. The success first-call may also crash after `run.created`
@@ -96,7 +96,7 @@ when the CLI starts being invoked from cron / scripts.
 **Raised by:** Gemini, GPT-5.5
 **Severity:** correctness — projection drift survives forever
 
-`octl_core::append_and_apply` writes the event line, fsyncs, then
+`taskfleet_core::append_and_apply` writes the event line, fsyncs, then
 calls `apply_event`. If the process dies between those two steps, the
 projection (manifest, node, discussion, spinoff) is permanently behind
 the event log. The next mutation writes `seq + 1` against stale
@@ -106,7 +106,7 @@ GPT-5.5 also flagged that `apply_node_created` writes the node file
 before incrementing `manifest.node_count` — same crash-window applies
 within `apply_event` itself.
 
-**Recommendation:** this is an `octl-core` concern, not a CLI one.
+**Recommendation:** this is an `taskfleet-core` concern, not a CLI one.
 Open `reducer-watermark` to add a `last_applied_seq` field to manifest
 and a startup "catch-up" pass that replays unapplied events. Separately,
 consider switching to "projections are pure caches; rebuild on demand"
@@ -125,7 +125,7 @@ cancel` and then reporting success via the agent (race window: agent
 was already writing the report when cancel arrived) flips back to
 `done`, breaking cancellation semantics.
 
-**Recommendation:** `octl-core` issue. Add `is_terminal()` guard and
+**Recommendation:** `taskfleet-core` issue. Add `is_terminal()` guard and
 make every status reducer a no-op when current status is terminal.
 Document the rule on `Status` itself.
 
@@ -141,7 +141,7 @@ does not truncate the file. `O_APPEND` then writes the next event
 immediately after the partial bytes, producing one invalid JSONL line
 that breaks every subsequent `read_all_events`.
 
-**Recommendation:** `octl-core` issue. `recover_last_seq` should
+**Recommendation:** `taskfleet-core` issue. `recover_last_seq` should
 return `(last_seq, append_offset)` and `append_event_with_seq` should
 `set_len(append_offset)` before writing.
 
@@ -152,14 +152,14 @@ return `(last_seq, append_offset)` and `append_event_with_seq` should
 **Raised by:** GPT-5.5
 **Severity:** UX — machine callers can't distinguish disk failure from corrupt log
 
-`run/mod.rs::from_core` maps every `octl_core::Error` (Io, Json,
+`run/mod.rs::from_core` maps every `taskfleet_core::Error` (Io, Json,
 CorruptEventLog, UnsupportedSchemaVersion) to the same `code:
 "io_error"`. Agents can't tell "retry the IO" from "the data on disk
 is bad and retrying won't help".
 
 **Recommendation:** small fix, but should be done across all noun
 modules at once when `node`/`event`/`discussion`/`spinoff` land. Add a
-proper `From<octl_core::Error> for CliError` with per-variant codes.
+proper `From<taskfleet_core::Error> for CliError` with per-variant codes.
 
 ---
 

@@ -27,12 +27,12 @@ Current state:
 
 ```yaml
 targets:
-  - {ecosystem: rust, package: orchestratectl, registry: crates.io,   adapter: cargo-publish}
-  - {ecosystem: rust, package: orchestratectl, registry: gh-releases, adapter: cargo-dist}
+  - {ecosystem: rust, package: taskfleet, registry: crates.io,   adapter: cargo-publish}
+  - {ecosystem: rust, package: taskfleet, registry: gh-releases, adapter: cargo-dist}
 ```
 
 **The Homebrew channel is missing.** `dist-workspace.toml` carries
-`publish-jobs = ["homebrew"]`, so cargo-dist writes `jarimustonen/homebrew-orchestratectl`
+`publish-jobs = ["homebrew"]`, so cargo-dist writes `jarimustonen/homebrew-taskfleet`
 on every tag. The contract does not mention it, so the engine neither plans nor verifies a
 channel real users install from. Declaring it as `adapter: homebrew-tap` was not an option
 before, since that makes the engine write the same formula cargo-dist already writes — see
@@ -44,22 +44,22 @@ CI, and sets `provenance_level: keyless` on that basis. But `adapter: cargo-publ
 the engine to publish locally from wherever the releaser happens to be. The declared
 adapter and the documented reality disagree.
 
-Note this is a two-crate workspace (`octl-core` + `orchestratectl`), so both crates need a
+Note this is a two-crate workspace (`taskfleet-core` + `taskfleet`), so both crates need a
 target, dependency-ordered.
 
 ## Fix
 
 ```yaml
 targets:
-  - {ecosystem: rust, package: octl-core,      registry: crates.io,   adapter: cargo-publish-ci}
-  - {ecosystem: rust, package: orchestratectl, registry: crates.io,   adapter: cargo-publish-ci}
-  - {ecosystem: rust, package: orchestratectl, registry: gh-releases, adapter: cargo-dist}
-  - {ecosystem: rust, package: orchestratectl, registry: homebrew,    adapter: cargo-dist}
+  - {ecosystem: rust, package: taskfleet-core,      registry: crates.io,   adapter: cargo-publish-ci}
+  - {ecosystem: rust, package: taskfleet, registry: crates.io,   adapter: cargo-publish-ci}
+  - {ecosystem: rust, package: taskfleet, registry: gh-releases, adapter: cargo-dist}
+  - {ecosystem: rust, package: taskfleet, registry: homebrew,    adapter: cargo-dist}
 distribution:
   adapter: cargo-dist
   gh_releases: true
   installers: [shell, homebrew]
-  homebrew_tap: jarimustonen/homebrew-orchestratectl
+  homebrew_tap: jarimustonen/homebrew-taskfleet
   platforms:
     - aarch64-apple-darwin
     - aarch64-unknown-linux-musl
@@ -126,7 +126,7 @@ Fleet context and the full per-repo audit:
 
 ## Target state: the fleet ships uniformly
 
-All four public fleet repos (`issuectl`, `glasspad`, `orchestratectl`, `project-canon`)
+All four public fleet repos (`issuectl`, `glasspad`, `taskfleet`, `project-canon`)
 should end up with the same declared shape, since all four already carry
 `publish-jobs = ["homebrew"]` and their own `publish-crates.yml`:
 
@@ -158,4 +158,4 @@ started working in 0.8.0).
 
 ### 2026-08-20T05:56:35Z · @pi-agent
 
-Validated with ossctl 0.9.0. 'ossctl contract validate --json --require-approved' returned valid=true, status=approved, targets=4, with no warnings. 'ossctl contract show --json --require-approved' confirmed octl-core and orchestratectl crates.io targets both use cargo-publish-ci; GitHub Releases and Homebrew both use cargo-dist; distribution explicitly enables GitHub Releases plus shell/Homebrew installers, the jarimustonen/homebrew-orchestratectl tap, and the exact cargo-dist target set (aarch64-apple-darwin plus aarch64/x86_64 Linux GNU). Static workflow checks confirmed publish-crates.yml is version-tag-triggered and runs octl-core before orchestratectl, while dist-workspace.toml/release.yml assign GitHub hosting and Homebrew formula publication to cargo-dist CI. No publish, release cut, or tag push was performed in this worker.
+Validated with ossctl 0.9.0. 'ossctl contract validate --json --require-approved' returned valid=true, status=approved, targets=4, with no warnings. 'ossctl contract show --json --require-approved' confirmed taskfleet-core and taskfleet crates.io targets both use cargo-publish-ci; GitHub Releases and Homebrew both use cargo-dist; distribution explicitly enables GitHub Releases plus shell/Homebrew installers, the jarimustonen/homebrew-taskfleet tap, and the exact cargo-dist target set (aarch64-apple-darwin plus aarch64/x86_64 Linux GNU). Static workflow checks confirmed publish-crates.yml is version-tag-triggered and runs taskfleet-core before taskfleet, while dist-workspace.toml/release.yml assign GitHub hosting and Homebrew formula publication to cargo-dist CI. No publish, release cut, or tag push was performed in this worker.

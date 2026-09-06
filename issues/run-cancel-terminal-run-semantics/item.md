@@ -4,7 +4,7 @@ updated: 2026-06-28
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 ---
 
@@ -14,7 +14,7 @@ closed: 2026-06-28
 
 Spun off from reducer-state-machine-hardening /llm-review (GPT-5.5 #2,#3,#4).
 
-Now that the reducer enforces a terminal-state guard (a run in Done/Failed/Cancelled never transitions again), `run cancel` (crates/octl-cli/src/run/cancel.rs) has two gaps it didn't have before:
+Now that the reducer enforces a terminal-state guard (a run in Done/Failed/Cancelled never transitions again), `run cancel` (crates/taskfleet-cli/src/run/cancel.rs) has two gaps it didn't have before:
 
 1. **Done/Failed runs**: `run cancel` only early-returns for `Status::Cancelled`. Cancelling a `Done`/`Failed` run now synthesizes node cancel reports, appends `run.status: cancelled` (which the reducer no-ops because the run is already terminal), and the CLI still prints `cancelled run ...` with success. The CLI claims a state change that the reducer refused. It should detect `manifest.status.is_terminal()` and either no-op with an accurate message or error `run_already_terminal`, without mutating nodes.
 
@@ -35,9 +35,9 @@ Out of scope for the reducer-hardening issue (that one only touched reducer.rs/s
 
 ## Implementation Notes
 
-- `crates/octl-core/src/cancel.rs` — new module: `cancel_run` / `cancel_run_unlocked`, `CancelOutcome`, `live_node_ids`.
-- `crates/octl-core/src/error.rs` — `Error::RunAlreadyTerminal { status }`.
-- `crates/octl-cli/src/run/cancel.rs` — thin wrapper; `run_not_found` pre-check + NotFound remap; `run_already_terminal` envelope.
+- `crates/taskfleet-core/src/cancel.rs` — new module: `cancel_run` / `cancel_run_unlocked`, `CancelOutcome`, `live_node_ids`.
+- `crates/taskfleet-core/src/error.rs` — `Error::RunAlreadyTerminal { status }`.
+- `crates/taskfleet-cli/src/run/cancel.rs` — thin wrapper; `run_not_found` pre-check + NotFound remap; `run_already_terminal` envelope.
 - Review findings + decisions: see `assessment.md`. Raw reviews in `history/review-cancel.md` (gitignored).
 - Spin-offs: `@cancel-idempotent-batch-append`, `@cancel-enumerate-from-event-log`.
 

@@ -5,7 +5,7 @@ type: task
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-28
 ---
 
@@ -36,7 +36,7 @@ drift-free source. Added (strictly additive, default `[]`, so still schema v2):
 `conflicts_with` was already present (P5.1, via the public getter) and is
 unchanged.
 
-Implementation: `crates/octl-cli/src/help.rs` (`requires` / `required_unless_present`
+Implementation: `crates/taskfleet-cli/src/help.rs` (`requires` / `required_unless_present`
 + `debug_field_list` / `quoted_tokens` helpers, with a module note explaining the
 Debug-projection choice). Guard tests pin the recovery so a clap upgrade that
 changes the Debug format fails CI loudly instead of silently emptying the field:

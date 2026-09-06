@@ -1,7 +1,7 @@
 //! Integration tests for the `run` subcommand family.
 //!
 //! Every test points the binary at a fresh `TempDir` via
-//! `TASKFLEET_HOME` so the user's real `~/.orchestratectl/` is
+//! `TASKFLEET_HOME` so the user's real `~/.taskfleet/` is
 //! never touched.
 
 #[cfg(unix)]
@@ -18,7 +18,7 @@ fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     c
 }
 
@@ -169,7 +169,7 @@ fn materialized_create_routes_through_the_recorded_exact_argv() {
     let worker = scratch.path().join("worker.sh");
     std::fs::write(
         &worker,
-        "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"${OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION-unset}\" \"${OCTL_INTERNAL_WORKER_STATE_ROOT-unset}\" \"$(($# + 1))\" \"$0\" \"$@\" > \"$CAPTURE_OUTPUT\"\nexec /bin/sleep 2\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$TASKFLEET_RUN_ID\" \"$TASKFLEET_NODE_ID\" \"$TASKFLEET_ATTEMPT\" \"${TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION-unset}\" \"${TASKFLEET_INTERNAL_WORKER_STATE_ROOT-unset}\" \"$(($# + 1))\" \"$0\" \"$@\" > \"$CAPTURE_OUTPUT\"\nexec /bin/sleep 2\n",
     )
     .unwrap();
     std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -192,18 +192,16 @@ default="local"
     let native = NativeSpawnTools::new();
     let worktree = native.worktree("worktree");
 
-    // Hostile product-name executables prove both the worker shim and detached
+    // A hostile product-name executable proves both the worker shim and detached
     // supervisor re-enter the exact current binary rather than consulting PATH.
     let hostile_marker = scratch.path().join("hostile-product-binary-ran");
-    for name in ["orchestratectl", "taskfleet"] {
-        let path = scratch.path().join(name);
-        std::fs::write(
-            &path,
-            format!("#!/bin/sh\n: > '{}'\nexit 99\n", hostile_marker.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let hostile = scratch.path().join("taskfleet");
+    std::fs::write(
+        &hostile,
+        format!("#!/bin/sh\n: > '{}'\nexit 99\n", hostile_marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hostile, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
@@ -399,7 +397,7 @@ fn exhausted_profile_returns_full_compact_attempt_without_mutation() {
 description="Local"
 capability="fast"
 residency="local"
-agents=[{harness="pi",command=["definitely-missing-octl-fixture"],telemetry="worker-v1"}]
+agents=[{harness="pi",command=["definitely-missing-taskfleet-fixture"],telemetry="worker-v1"}]
 [profile]
 default="secure"
 "#,
@@ -457,7 +455,7 @@ fn repository_config_is_selection_only_and_cannot_define_commands() {
     let repo = TempDir::new().unwrap();
     std::fs::create_dir(repo.path().join(".git")).unwrap();
     std::fs::write(
-        repo.path().join(".orchestratectl.toml"),
+        repo.path().join(".taskfleet.toml"),
         r#"[profiles.evil]
 description = "checkout executable"
 capability = "fast"
@@ -880,7 +878,7 @@ fn concurrent_same_idempotency_key_creates_one_run() {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
                 cmd.env("TASKFLEET_HOME", &path)
                     .env("HOME", &path)
-                    .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+                    .env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1")
                     .args([
                         "--output",
                         "json",
@@ -1231,12 +1229,12 @@ fn list_when_root_missing_returns_empty() {
 /// creating any worker node (pending, no supervisor, 0 nodes, no progress since
 /// creation) — with `stillborn: true`, so it is no longer a silent `pending`
 /// row that looks stuck until someone notices (issue
-/// `supervisor-dies-before-worker-node`). Under `OCTL_TEST_SKIP_MATERIALIZE` a
+/// `supervisor-dies-before-worker-node`). Under `TASKFLEET_TEST_SKIP_MATERIALIZE` a
 /// fresh `run create` spawns no supervisor, giving exactly that shape. A run
 /// that reached its first node is NOT stillborn — the two flags never coincide,
 /// since stillborn requires `node_count == 0`.
 ///
-/// `OCTL_STILLBORN_LIST_GRACE_SECS=0` disables the age gate so the just-created
+/// `TASKFLEET_STILLBORN_LIST_GRACE_SECS=0` disables the age gate so the just-created
 /// run flags immediately; the companion `list_within_grace_does_not_flag_
 /// stillborn` test covers the default (grace-protected) create window.
 #[test]
@@ -1250,7 +1248,7 @@ fn list_flags_stillborn_run() {
 
     let v = run_ok(
         bin(&home)
-            .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+            .env("TASKFLEET_STILLBORN_LIST_GRACE_SECS", "0")
             .args(["--output", "json", "run", "list"]),
     );
     let runs = v["data"]["runs"].as_array().expect("runs array");
@@ -1292,7 +1290,7 @@ fn list_flags_stillborn_run() {
     // The plain-text row carries the `(stillborn)` marker, distinct from
     // `(stalled)`, so a human scanning `run list` sees the dead run.
     let out = bin(&home)
-        .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+        .env("TASKFLEET_STILLBORN_LIST_GRACE_SECS", "0")
         .args(["--output", "text", "run", "list"])
         .output()
         .expect("spawn");
@@ -1907,7 +1905,7 @@ fn attention_beats_orphaned_stall_in_show_and_list() {
 
     let list = run_ok(
         bin(&home)
-            .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+            .env("TASKFLEET_STILLBORN_LIST_GRACE_SECS", "0")
             .args(["--output", "json", "run", "list"]),
     );
     let row = list["data"]["runs"]

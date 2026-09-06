@@ -11,7 +11,7 @@ closed_by: adr-decision-2
 
 # idle-unmerged net: sum process-tree CPU, not just the agent PID
 
-_Source: crates/octl-cli/src/supervise/watchdog.rs::pid_cpu_time_centis_
+_Source: crates/taskfleet-cli/src/supervise/watchdog.rs::pid_cpu_time_centis_
 
 ## Description
 

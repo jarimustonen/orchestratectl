@@ -6,25 +6,25 @@ owner: jari
 closed: 2026-06-29
 status: done
 priority: high
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 ---
 
 # Skill-bundling campaign: replace homebase /worktree-* + /orchestrate + /fan-out via binary-bundled SKILL.md
 
 ## Description
 
-Per AGENTS-AI-FIRST-CLI §17 (binary is source of truth, skill follows): author the full skill family as bundled SKILL.md files in `crates/octl-cli/skills/`, install via `orchestratectl skill install --force` to `~/.claude/skills/`. Replaces homebase versions. Sequential authoring so each completed skill set the contract for the next.
+Per AGENTS-AI-FIRST-CLI §17 (binary is source of truth, skill follows): author the full skill family as bundled SKILL.md files in `crates/taskfleet-cli/skills/`, install via `taskfleet skill install --force` to `~/.claude/skills/`. Replaces homebase versions. Sequential authoring so each completed skill set the contract for the next.
 
 ## Outcome
 
 All 10 planned phases shipped, plus a bonus 11th (`worktree-merge`) bundled mid-campaign when an interactive-worktree gap surfaced live. Binary ships **13 skills**:
 
-- `orchestratectl-overview`, `octl-run-overview`, `octl-spawn-spinoff`
+- `taskfleet-overview`, `taskfleet-run-overview`, `taskfleet-spawn-spinoff`
 - `worktree-code`, `worktree-spinoff`, `worktree-merge`
 - `worktree-research`, `worktree-bugfix`, `worktree-technical-decision`, `worktree-make-skill`
 - `worktree-orchestrated`, `fan-out`, `orchestrate`
 
-`orchestratectl doctor` reports 63 ok / 0 fail. `~/.claude/skills/` deployed and end-to-end loops proven:
+`taskfleet doctor` reports 63 ok / 0 fail. `~/.claude/skills/` deployed and end-to-end loops proven:
 
 - `/worktree-spinoff` (autonomous) — spawn → work → merge → self-cleanup with zero manual intervention.
 - `/worktree-code` + `/worktree-merge` (interactive) — same loop, human-gated merge.

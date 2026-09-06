@@ -2,7 +2,7 @@
 //!
 //! [`TestHome`] is a `TempDir`-backed `TASKFLEET_HOME` that reaps every
 //! supervisor process spawned beneath it when it drops, so the test suite
-//! never leaks `orchestratectl supervise` processes
+//! never leaks `taskfleet supervise` processes
 //! (issue: supervise-test-teardown-leak).
 //!
 //! `#![allow(dead_code)]` because each integration-test binary compiles this
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 /// Native-spawn fake executables for integration tests. Unlike the removed
-/// `OCTL_CREATE_SH` seam, these exercise Taskfleet's production materializer:
+/// `TASKFLEET_CREATE_SH` seam, these exercise Taskfleet's production materializer:
 /// typed git/workmux/tmux argv, generated launcher, PID handshake, and cleanup.
 pub struct NativeSpawnTools {
     dir: TempDir,
@@ -285,7 +285,7 @@ impl Drop for TestHome {
 /// pid file lives under `<home>/runs/*/supervisor.pid`.
 pub fn reap_supervisors_under(home: &Path) {
     // Only signal pids that are genuinely *our* detached supervisor processes
-    // (command line names `orchestratectl supervise`). A `supervisor.pid` file
+    // (command line names `taskfleet supervise`). A `supervisor.pid` file
     // can hold an unrelated pid — e.g. `run_error_envelopes` parks the test's
     // own pid to exercise the "supervisor already running" refusal — and a pid
     // can be recycled to a stranger after the supervisor exits; signalling
@@ -346,9 +346,8 @@ fn process_gone(pid: libc::pid_t) -> bool {
     unsafe { libc::kill(pid, 0) != 0 }
 }
 
-/// True iff `pid` names a live `taskfleet supervise <run-id>` or compatibility
-/// `orchestratectl supervise <run-id>` process. Integration tests execute the
-/// former while installed compatibility runs use the latter. Matched via `ps`
+/// True iff `pid` names a live `taskfleet supervise <run-id>` process.
+/// Matched via `ps`
 /// (portable across macOS and Linux), so a parked test pid or recycled unrelated
 /// pid is never mistaken for a supervisor. The `" supervise"` argument also
 /// distinguishes the `supervise_gates` test binary from the actual subcommand.
@@ -363,7 +362,7 @@ fn is_supervisor_process(pid: libc::pid_t) -> bool {
         return false;
     }
     let command = String::from_utf8_lossy(&out.stdout);
-    command.contains("taskfleet supervise") || command.contains("orchestratectl supervise")
+    command.contains("taskfleet supervise")
 }
 
 /// Collect the deduplicated, positive supervisor PIDs recorded under

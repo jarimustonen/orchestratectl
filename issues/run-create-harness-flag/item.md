@@ -26,7 +26,7 @@ Zechner / Earendil, MIT — AGENTS.md-native, Agent-Skills standard, print/JSON/
 headless).
 
 ## Key local finding
-orchestratectl **already ships a `pi` harness adapter** — `harness bakeoff` lists adapters
+taskfleet **already ships a `pi` harness adapter** — `harness bakeoff` lists adapters
 `aider, claude, claude-deepseek, pi` behind a `CodeHarness` seam. But that seam is **not wired
 into `run create`**: every real run (spinoff/orchestrate/fan-out/research/code) still
 hard-launches `claude` in a tmux pane. So this is mostly **promotion of an existing adapter**,
@@ -36,7 +36,7 @@ not building a harness from scratch.
 1. **`run create --harness <name>`** (default `claude`) — routes the worker launch through the
    selected `CodeHarness` adapter for all run kinds, instead of the hardcoded claude launch.
 2. **Per-kind default + config precedence** (§ AGENTS-AI-FIRST-CLI §8): flag > env
-   (`ORCHESTRATECTL_HARNESS`) > config file > built-in default (`claude`). So a repo/user can
+   (`TASKFLEET_HARNESS`) > config file > built-in default (`claude`). So a repo/user can
    default `research`/`spinoff` to `pi` while keeping `claude` for interactive `code`.
 3. **Skill/Agent-tool translation shim** where the harness lacks Claude-specific tools (pi has
    no sub-agents/MCP/permission-sandbox by design — mostly fine since orchestration is already

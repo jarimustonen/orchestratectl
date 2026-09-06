@@ -17,7 +17,7 @@ closed_by: agent
 
 ## Observed occurrence
 
-Validation for `@taskfleet-native-materialization` left 14 clean worktrees/branches and 16 tmux fixture windows in the real orchestratectl repository/headless session after reporting success. Names included `smoke`, `interrupted`, `live-child`, `doomed-child`, and `pending-coordinates`. One real-pi smoke branch, `wt/9htzpmpwzn-live`, contains two unmerged alternative implementation commits (`d06608a`, `fa2acef`), so it was preserved while all proven-empty fixtures were safely removed.
+Validation for `@taskfleet-native-materialization` left 14 clean worktrees/branches and 16 tmux fixture windows in the real taskfleet repository/headless session after reporting success. Names included `smoke`, `interrupted`, `live-child`, `doomed-child`, and `pending-coordinates`. One real-pi smoke branch, `wt/9htzpmpwzn-live`, contains two unmerged alternative implementation commits (`d06608a`, `fa2acef`), so it was preserved while all proven-empty fixtures were safely removed.
 
 ## Impact
 

@@ -5,7 +5,7 @@ type: task
 reporter: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 labels: [review-spinoff, help-json]
 closed: 2026-06-28
 commits:

@@ -5,7 +5,7 @@ type: chore
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-13
 ---
 
@@ -13,4 +13,4 @@ closed: 2026-06-13
 
 ## Description
 
-Combined polish: schema_version to octl-core, spinoff approve different-slug error, idempotency-key scope docs, deterministic-ID hex to base32. See issues/orchestratectl-mvp/decisions-2026-06-12.md.
+Combined polish: schema_version to taskfleet-core, spinoff approve different-slug error, idempotency-key scope docs, deterministic-ID hex to base32. See issues/taskfleet-mvp/decisions-2026-06-12.md.

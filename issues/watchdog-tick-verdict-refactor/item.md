@@ -12,13 +12,13 @@ closed_by: adr-decision-2
 
 # Extract watchdog_tick per-failure-mode blocks into a WatchdogVerdict classifier
 
-_Source: orchestratectl supervise (idle-unmerged review follow-up)_
+_Source: taskfleet supervise (idle-unmerged review follow-up)_
 
 ## Description
 
 Spun off from `/llm-review` of the idle-unmerged safety net (Opus finding #15/#8).
 
-`watchdog_tick` (crates/octl-cli/src/supervise/mod.rs) now carries four tightly-coupled, sequentially-gated failure-mode blocks — liveness → reconcile-merged → death-with-retry → idle-unmerged — each with its own outside-then-under-lock probe + TOCTOU close + logging conventions. Each new mode adds another block; the structure is approaching unmaintainable.
+`watchdog_tick` (crates/taskfleet-cli/src/supervise/mod.rs) now carries four tightly-coupled, sequentially-gated failure-mode blocks — liveness → reconcile-merged → death-with-retry → idle-unmerged — each with its own outside-then-under-lock probe + TOCTOU close + logging conventions. Each new mode adds another block; the structure is approaching unmaintainable.
 
 Proposal: extract a `WatchdogVerdict` enum and a `classify(node, git, tmux_snapshot, now, ...) -> WatchdogVerdict` function so the tick loop becomes a single `match` (Alive | ReconcileMerged | DeadEmptyHanded | DeadRecoverable | IdleUnmerged | ...), each arm doing the lock+synthesize. Keeps every existing TOCTOU/state-integrity invariant; purely a structural refactor with no behavior change (assert via the existing watchdog test suite).
 

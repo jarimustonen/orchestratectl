@@ -5,11 +5,11 @@ type: improvement
 closed: 2026-06-27
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 related: ['@core-path-traversal-id-validation', '@append-typed-node-id']
 ---
 
-# octl-core: tighten id validators to canonical forms + typed Event ids
+# taskfleet-core: tighten id validators to canonical forms + typed Event ids
 
 ## Description
 

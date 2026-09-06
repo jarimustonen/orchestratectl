@@ -22,7 +22,7 @@ The supervisor's watchdog liveness probe keys off `TmuxIdentity.window_id`. In a
 When `TmuxIdentity.pane_id` is present, probe pane existence (and that the pane still belongs to the recorded window/session), not just window existence; fall back to `window_id` when `pane_id` is None (legacy runs). `kill-window` teardown stays window-scoped per state-integrity invariant #5 (supervisor owns the whole window). Tests: pane-gone-while-window-lives, pane-dead-with-`remain-on-exit`, pane-moved-to-another-window, legacy identity without pane_id.
 
 ## Where
-`crates/octl-cli/src/supervise/watchdog.rs`; `TmuxIdentity` already carries `pane_id` (`crates/octl-core/src/schema.rs`).
+`crates/taskfleet-cli/src/supervise/watchdog.rs`; `TmuxIdentity` already carries `pane_id` (`crates/taskfleet-core/src/schema.rs`).
 
 ## Resolution
 

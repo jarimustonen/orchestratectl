@@ -6,7 +6,7 @@ status: done
 priority: normal
 provenance: other
 provenance_detail: Taskfleet implementation run
-source_ref: orchestratectl:01m1khdj7f4j4zdfb4cvstf8z1/task
+source_ref: taskfleet:01m1khdj7f4j4zdfb4cvstf8z1/task
 originating_run: 01m1khdj7f4j4zdfb4cvstf8z1
 originating_run_kind: spinoff
 closed: 2026-09-03

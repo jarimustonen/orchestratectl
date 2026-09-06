@@ -48,7 +48,7 @@ and `0.2.0`:
 gh_account: "jarimustonen".to_string(),
 repo_root:  "~/Sources".to_string(),
 const DEFAULT_FAMILY_TOOLS: [&str; 7] = [
-    "issuectl", "orchestratectl", "crmctl", "tilictl", "ossctl", "intakectl", "glasspad",
+    "issuectl", "taskfleet", "crmctl", "tilictl", "ossctl", "intakectl", "glasspad",
 ];
 ```
 
@@ -98,7 +98,7 @@ Grep shipatusta artefaktista (pois lukien issues/, TODO.md, history/) hakusanoil
 osuu 19 tiedostoon:
 
 **Mukana toimitettavat SKILL-templaatit (5)** — nämä ovat `skills`-lanen kuumia tiedostoja:
-`octl-run-overview`, `octl-spawn-spinoff`, `orchestratectl-overview`, `worktree-merge`, `worktree-spinoff`.
+`taskfleet-run-overview`, `taskfleet-spawn-spinoff`, `taskfleet-overview`, `worktree-merge`, `worktree-spinoff`.
 
 **Juuridokumentit (7):** AGENTS.md, CLAUDE.md, README.md, CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, OSS-RELEASE.md
 **Rakennus/julkaisu (4):** Cargo.toml, dist-workspace.toml, .github/workflows/{publish-crates,release}.yml
@@ -109,8 +109,8 @@ perusteella ole saastunut, toisin kuin project-canonissa. Se on hyvä merkki mut
 varsinainen auditointi tarkistaa myös testit ja fixturet.
 
 TÄRKEÄ EROTTELU auditoijalle: iso osa osumista on **legitiimejä julkisia koordinaatteja**, ei vuotoja —
-`github.com/jarimustonen/orchestratectl` (repon oikea osoite Cargo.tomlissa, README-badgeissa,
-release-workflowissa) ja Homebrew-tap `jarimustonen/orchestratectl`. Näitä ei pidä poistaa.
+`github.com/jarimustonen/taskfleet` (repon oikea osoite Cargo.tomlissa, README-badgeissa,
+release-workflowissa) ja Homebrew-tap `jarimustonen/taskfleet`. Näitä ei pidä poistaa.
 Huolestuttava luokka on: yksityisten repojen nimet (crmctl, tilictl, intakectl, aggountant),
 henkilökohtaiset polkukäytännöt (~/Sources, /Users/jari) ja sähköpostiosoitteet.
 
@@ -129,4 +129,4 @@ Se on puolustettavissa — julkisen artefaktin vuototarkistus on aidosti kiireel
 
 ### 2026-08-20T06:50:06Z · @pi
 
-Completed the full shipped-artifact audit. Source, metadata/defaults, root docs, release/scaffold configuration, generated cargo-dist workflow, tests/fixtures, bundled skill templates, installed-skill content, and package manifests were inspected. Genuine user-specific facts were removed: personal authorship/contact metadata, private repository/provenance names, personal source-root assumptions, and the private runner hostname. The only surviving account-handle occurrences in shipped scope are required public coordinates for the GitHub repositories and Homebrew taps; reserved example emails, $HOME paths, vendor bot identity, and canonical Linuxbrew paths were classified as neutral. cargo package produced 26-file octl-core and 163-file orchestratectl archives; both archive scans were clean. A release build using the generated HOME/GITHUB_WORKSPACE remaps passed a strings scan with no audited values, and GitHub private vulnerability reporting was enabled and verified. /llm-review and /assess-findings were completed; confirmed localized findings were applied (preserve RUSTFLAGS, remap both build roots, ignore regenerated canon copies, verify the private reporting channel, restore public ADR provenance, and use portable $HOME examples). The skill insta loop completed with zero snapshot changes to accept, and every snapshot was therefore unchanged. The exact green gate passed: fmt, clippy -D warnings, release nextest (1000 passed, 1 skipped), doctests, and rustdoc -D warnings. Tool-sensitive suites also passed under a stripped PATH (44/44). The tracked issue archive/TODO/history remain outside the issue-defined shipped scope and are absent from Cargo packages, dist assets, Homebrew output, and installed skills.
+Completed the full shipped-artifact audit. Source, metadata/defaults, root docs, release/scaffold configuration, generated cargo-dist workflow, tests/fixtures, bundled skill templates, installed-skill content, and package manifests were inspected. Genuine user-specific facts were removed: personal authorship/contact metadata, private repository/provenance names, personal source-root assumptions, and the private runner hostname. The only surviving account-handle occurrences in shipped scope are required public coordinates for the GitHub repositories and Homebrew taps; reserved example emails, $HOME paths, vendor bot identity, and canonical Linuxbrew paths were classified as neutral. cargo package produced 26-file taskfleet-core and 163-file taskfleet archives; both archive scans were clean. A release build using the generated HOME/GITHUB_WORKSPACE remaps passed a strings scan with no audited values, and GitHub private vulnerability reporting was enabled and verified. /llm-review and /assess-findings were completed; confirmed localized findings were applied (preserve RUSTFLAGS, remap both build roots, ignore regenerated canon copies, verify the private reporting channel, restore public ADR provenance, and use portable $HOME examples). The skill insta loop completed with zero snapshot changes to accept, and every snapshot was therefore unchanged. The exact green gate passed: fmt, clippy -D warnings, release nextest (1000 passed, 1 skipped), doctests, and rustdoc -D warnings. Tool-sensitive suites also passed under a stripped PATH (44/44). The tracked issue archive/TODO/history remain outside the issue-defined shipped scope and are absent from Cargo packages, dist assets, Homebrew output, and installed skills.

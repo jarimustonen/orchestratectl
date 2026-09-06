@@ -4,7 +4,7 @@ updated: 2026-06-28
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 related: ['@core-path-traversal-id-validation']
 closed: 2026-06-28
 commits:
@@ -16,7 +16,7 @@ commits:
   summary: address multi-model review (read-side run_id, manifest, path, typed check_run_id)
 ---
 
-# octl-core: verify projection id key matches file body
+# taskfleet-core: verify projection id key matches file body
 
 ## Description
 

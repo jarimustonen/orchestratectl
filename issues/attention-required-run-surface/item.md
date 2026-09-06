@@ -23,7 +23,7 @@ Add the bounded visibility surface from `issues/lifecycle-architecture-review/de
 ## Context
 Manual finish only works if a stuck run surfaces in the stint loop. `run wait --timeout` should return a distinct non-terminal attention-required result; `run list` / `run show` should expose pending age, last observed pid, worktree path, and a concise resume hint. Add branch-preserving per-node cancel if it is not already covered by the typed-outcome work.
 
-Likely touches `crates/octl-cli/src/run/*`, run summary DTOs, and supervise status derivation.
+Likely touches `crates/taskfleet-cli/src/run/*`, run summary DTOs, and supervise status derivation.
 
 ## Done criteria
 - `run wait --timeout` unblocks with an attention-required classification without mutating the run terminal.

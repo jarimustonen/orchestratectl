@@ -50,5 +50,5 @@ useful. Lower value: a re-spec produces a whole new plan (chunk brief/identity m
 change), so a carried authored diff can be stale/misleading; needs the re-spec DAG-diff
 to map old→new chunk identity before a diff is worth carrying.
 
-Files: `crates/octl-cli/src/pipeline/live/{mod.rs,git.rs}`.
+Files: `crates/taskfleet-cli/src/pipeline/live/{mod.rs,git.rs}`.
 

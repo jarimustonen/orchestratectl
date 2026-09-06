@@ -130,7 +130,7 @@ pub(crate) fn recover_run(paths: &RunPaths, git: &str) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 error = %e,
                 "merge-recovery: could not enumerate nodes; will retry next tick"
             );
@@ -140,12 +140,12 @@ pub(crate) fn recover_run(paths: &RunPaths, git: &str) {
     for nid in node_ids {
         match recover_node(paths, &nid, git) {
             Recovery::Completed => tracing::info!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node_id = %nid,
                 "merge-recovery: completed a crashed merge transaction (git-verified landed)"
             ),
             Recovery::Rejected { reason } => tracing::warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node_id = %nid, reason = %reason,
                 "merge-recovery: rejected a crashed merge transaction; work preserved"
             ),

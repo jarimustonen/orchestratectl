@@ -1,3 +1,0 @@
-{"ts":"2026-09-02T00:00:00Z","seq":1,"kind":"run.created","run_id":"01j00000000000000000000002","data":{"harness":"pi","harness_source":"default","kind":"spinoff","lifecycle":"interactive","title":"nonterminal fixture"}}
-{"ts":"2026-09-02T00:00:00Z","seq":2,"kind":"node.created","run_id":"01j00000000000000000000002","node_id":"n-0001","data":{"agent_pid":4242,"agent_pid_start_time":"2026-09-02T00:00:00Z","base_sha":"1111111111111111111111111111111111111111","branch":"wt/fixture-worker","kind":"spinoff","supervisor_pid":4343,"task":"fixture task","tmux_window":"fixture-window","worktree_path":"/fixture/worktree"}}
-{"ts":"2026-09-02T00:00:00Z","seq":3,"kind":"node.status","run_id":"01j00000000000000000000002","node_id":"n-0001","data":{"status":"running"}}

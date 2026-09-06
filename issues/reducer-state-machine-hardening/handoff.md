@@ -8,7 +8,7 @@ type: handoff
 
 ## What landed
 
-The reducer (`octl-core::reducer`) is now the canonical gate for two
+The reducer (`taskfleet-core::reducer`) is now the canonical gate for two
 invariants that were previously enforced only at CLI write time:
 
 1. **success XOR cancelled on `node.report`** — `report_terminal_status`

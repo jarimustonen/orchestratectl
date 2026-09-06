@@ -19,7 +19,7 @@ built with `-D warnings`/broken-link denial, the job exits 101.
 ## Failure
 ```
 error: unresolved link to `crate::spinoff::approve`
-error: could not document `orchestratectl`
+error: could not document `taskfleet`
 warning: build failed, waiting for other jobs to finish...
 ##[error]Process completed with exit code 101.
 ```

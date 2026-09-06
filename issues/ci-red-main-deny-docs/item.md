@@ -19,7 +19,7 @@ closed: 2026-08-10
 
 CI on `main` has been **red for several days** (GitHub emailed "Run failed: CI - main" for commits `df176f4` 2026-08-06, `355f064` 2026-08-08, `732b6d5` 2026-08-09, and the latest run 2026-08-10 is still failing). Three jobs fail; `rustfmt`, `clippy`, `test (ubuntu-latest)` and `msrv` pass.
 
-Reference run: <https://github.com/jarimustonen/orchestratectl/actions/runs/31356764835> (2026-08-10).
+Reference run: <https://github.com/jarimustonen/taskfleet/actions/runs/31356764835> (2026-08-10).
 
 ## Failing jobs & root causes
 
@@ -34,13 +34,13 @@ advisories FAILED, bans ok, licenses ok, sources ok
 A transitive dependency is flagged by RUSTSEC-2026-0009 (fixed in the crate's v0.3.47+). Fix: bump the offending dependency (`cargo update` to pull ≥0.3.47), or, if no fix path is available yet, add a time-boxed advisory ignore in `deny.toml` with a tracking note.
 
 ### 2. `docs` (cargo doc, deny broken intra-doc links) — doc-link errors
-`octl-core` fails to document; representative errors:
+`taskfleet-core` fails to document; representative errors:
 ```
 error: public documentation for `plan` links to private item `tolerated_fields`
 error: public documentation for `TOLERATED_OPTIONAL_FIELDS` links to private item `tolerated_fields`
 error: public documentation for `TOLERATED_OPTIONAL_FIELDS` links to private item `ObjectShape`
 error: public documentation for `UnsafeCwd` links to private item `is_safe_repo_relative`
-error: could not document `octl-core`
+error: could not document `taskfleet-core`
 error: unresolved link to `Opus`
 error: unresolved link to `TestId`
 error: unresolved link to `ChunkOutcome::Committed` / `NoChange` / `Failed`

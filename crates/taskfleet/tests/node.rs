@@ -1,4 +1,4 @@
-//! Integration tests for `orchestratectl node {list,show,report}`.
+//! Integration tests for `taskfleet node {list,show,report}`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,7 +10,7 @@ fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     c.env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path());
-    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    c.env("TASKFLEET_TEST_SKIP_MATERIALIZE", "1");
     c
 }
 

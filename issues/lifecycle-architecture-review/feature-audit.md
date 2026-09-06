@@ -43,7 +43,7 @@ kinds and the discussions/spin-off-proposal subsystems.
 
 ## 2. Evidence base (what I could gather headlessly)
 
-### 2.1 Run-kind frequency — all 717 runs on disk (`~/.orchestratectl/runs/*/manifest.json`)
+### 2.1 Run-kind frequency — all 717 runs on disk (`~/.taskfleet/runs/*/manifest.json`)
 
 | kind | count | share |
 |---|---:|---:|
@@ -112,9 +112,9 @@ persist to manifest — treat as "used by 2 skills, low volume").
 
 ### 2.6 Additive subsystems — referenced by ZERO workflow skills
 
-`grep` across `crates/octl-cli/skills/*` **and** the installed
+`grep` across `crates/taskfleet-cli/skills/*` **and** the installed
 `~/.claude/skills/*` for `pipeline run`, `harness bakeoff`, `--harness`,
-`orchestratectl pipeline`, `orchestratectl harness`: **no matches**. These command
+`taskfleet pipeline`, `taskfleet harness`: **no matches**. These command
 trees exist only as standalone CLI surface; nothing in the worktree/stint/fan-out/
 orchestrate workflow family drives them.
 
@@ -177,7 +177,7 @@ is an autonomous single-node worker.
 
 | surface | class | evidence | drag |
 |---|---|---|---|
-| **`run create --harness`** + `ORCHESTRATECTL_HARNESS` env + `config.toml [harness]` per-kind precedence | 🔴 | `--harness` in **0 skills**, **0/717 runs** non-claude | a 4-level precedence resolver (`harness::select::resolve_with`), per-kind config validation, `manifest.harness` + `harness_source` provenance fields on every run, `run show`/`run list --json` columns, doctor exposure — all to select a worker that is **always** `claude` |
+| **`run create --harness`** + `TASKFLEET_HARNESS` env + `config.toml [harness]` per-kind precedence | 🔴 | `--harness` in **0 skills**, **0/717 runs** non-claude | a 4-level precedence resolver (`harness::select::resolve_with`), per-kind config validation, `manifest.harness` + `harness_source` provenance fields on every run, `run show`/`run list --json` columns, doctor exposure — all to select a worker that is **always** `claude` |
 
 ### 3.4 Collaboration subsystems
 
@@ -298,12 +298,12 @@ the cut that most directly attacks the epic's combinatorial-edge-case hypothesis
 
 ## 7. Method notes / caveats
 
-- Usage is measured over the on-disk run history (`~/.orchestratectl/runs`,
+- Usage is measured over the on-disk run history (`~/.taskfleet/runs`,
   717 runs, 2026-07-09 → 2026-08-12) — a single primary user (Jari) over ~5 weeks.
   A kind at 0 runs is strong evidence of non-use; a kind in single digits is weak
   evidence and warrants the confirm question rather than an automatic cut.
 - "Referenced by 0 skills" was checked against **both** the bundled
-  `crates/octl-cli/skills/*/SKILL.template.md` **and** the installed
+  `crates/taskfleet-cli/skills/*/SKILL.template.md` **and** the installed
   `~/.claude/skills/*` — so it reflects the running workflow surface, not just source.
 - LOC figures are `wc -l` on the relevant source trees; they measure code mass, not
   cyclomatic drag, but the additive subsystems (§2.6, §2.8) are the clearest targets.

@@ -16,7 +16,7 @@ closed: 2026-08-11
 
 ## Description
 
-push_blocked_chunk (crates/octl-cli/src/pipeline/live/mod.rs) records `tier: chunk.tier.wire_name()` (plan-declared) rather than the actual r.tier / run.chunk_tier, and always sets `commit: None` even for a floor-green Built preservation whose exact OID is known. A preserved report can misstate the tier and omits the recoverable commit OID.
+push_blocked_chunk (crates/taskfleet-cli/src/pipeline/live/mod.rs) records `tier: chunk.tier.wire_name()` (plan-declared) rather than the actual r.tier / run.chunk_tier, and always sets `commit: None` even for a floor-green Built preservation whose exact OID is known. A preserved report can misstate the tier and omits the recoverable commit OID.
 
 Fix: thread r.tier and the Built commit OID into push_blocked_chunk (or build the ChunkReport directly from WaveBuildResult).
 

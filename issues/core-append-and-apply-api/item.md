@@ -4,11 +4,11 @@ updated: 2026-06-27
 type: improvement
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-27
 ---
 
-# octl-core: append_and_apply_event single mutation API
+# taskfleet-core: append_and_apply_event single mutation API
 
 ## Description
 

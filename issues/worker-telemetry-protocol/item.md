@@ -22,14 +22,14 @@ commits:
 
 ## Goal
 
-Design the smallest reliable worker-status protocol for autonomous orchestratectl runs. Replace process/activity heuristics with facts explicitly emitted by a harness adapter. The first adapter is a separately packaged pi.dev extension; orchestratectl remains harness-neutral and owns the durable run state.
+Design the smallest reliable worker-status protocol for autonomous taskfleet runs. Replace process/activity heuristics with facts explicitly emitted by a harness adapter. The first adapter is a separately packaged pi.dev extension; taskfleet remains harness-neutral and owns the durable run state.
 
 The protocol reports the latest lifecycle state explicitly told by a harness adapter and whether that adapter has refreshed recently. It does not diagnose progress or distinguish a healthy long-running operation from a wedged one; adding such inference would recreate the removed stall heuristics. Silence must not imply success, failure, retry, or teardown authority.
 
 ## Product shape
 
 - A pi.dev extension observes documented lifecycle events such as agent start/settled, turn boundaries, and tool execution start/update/end.
-- While the pi worker session is alive, the adapter sends a bounded periodic lease/keepalive plus a small explicit state to a public orchestratectl CLI/JSON endpoint.
+- While the pi worker session is alive, the adapter sends a bounded periodic lease/keepalive plus a small explicit state to a public taskfleet CLI/JSON endpoint.
 - The state may distinguish at least agent-active, tool-running, idle/settled, and adapter-shutdown; design must determine the minimal vocabulary and whether tool name plus elapsed time is safe and useful.
 - Missing or expired telemetry means only `telemetry unavailable/stale` and requests attention. It must never imply merge success, terminal failure, or authorize teardown.
 - Existing typed terminal outcomes and `run merge` remain the only success truth. Existing worker process exit recording remains the terminal crash backstop.
@@ -37,7 +37,7 @@ The protocol reports the latest lifecycle state explicitly told by a harness ada
 
 ## Boundary
 
-The pi.dev adapter belongs outside this repository as a small installable pi package. It may call a documented orchestratectl command and use public pi.dev extension events, but orchestratectl must not import pi packages, access an extension manager/EventBus, assume pi process IDs or logs, or make session-scoped extension state canonical.
+The pi.dev adapter belongs outside this repository as a small installable pi package. It may call a documented taskfleet command and use public pi.dev extension events, but taskfleet must not import pi packages, access an extension manager/EventBus, assume pi process IDs or logs, or make session-scoped extension state canonical.
 
 This is distinct from the rejected custom background-job manager. It reports the state of the current worker session; it does not own durable jobs or replace the neutral runner contract.
 
@@ -50,7 +50,7 @@ This is distinct from the rejected custom background-job manager. It reports the
 5. How does `run show` / `run wait` distinguish active telemetry, stale telemetry, no adapter, and an explicitly settled agent?
 6. How are the current tool and elapsed time reported without leaking command arguments, secrets, or unbounded output?
 7. How is pi capability advertised and enforced so an unsupported harness cannot be launched autonomously by mistake?
-8. Which parts belong to orchestratectl, the external pi package, and the end-to-end stint lifecycle?
+8. Which parts belong to taskfleet, the external pi package, and the end-to-end stint lifecycle?
 
 ## Phase 1 — design and feasibility only
 
@@ -70,7 +70,7 @@ This is distinct from the rejected custom background-job manager. It reports the
 - [x] Unsupported harnesses are represented honestly; Claude autonomous runs are not silently treated as telemetry-capable.
 - [x] The contract is harness-neutral and usable by a future adapter without pi-specific fields.
 - [x] The external package boundary and installation/trust model are explicit.
-- [x] The design includes failure injection for adapter crash, pi crash, orchestratectl unavailability, delayed/duplicate heartbeat, stale attempt, long healthy tool execution, and clean agent settlement.
+- [x] The design includes failure injection for adapter crash, pi crash, taskfleet unavailability, delayed/duplicate heartbeat, stale attempt, long healthy tool execution, and clean agent settlement.
 
 ## Related work
 

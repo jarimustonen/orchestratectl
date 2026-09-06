@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 
-pub const TOKEN_ENV: &str = "OCTL_INTERNAL_WORKER_HANDSHAKE_TOKEN";
+pub const TOKEN_ENV: &str = "TASKFLEET_INTERNAL_WORKER_HANDSHAKE_TOKEN";
 
 #[derive(ClapArgs, Debug)]
 pub struct WorkerHandshakeArgs {

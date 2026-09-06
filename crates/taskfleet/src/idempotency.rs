@@ -71,7 +71,7 @@ fn key_hash(repo: Option<&str>, branch: Option<&str>, key: &str) -> String {
 ///
 /// The `_in` functions take the Taskfleet root explicitly so tests can
 /// point at a scratch dir without mutating the process-global
-/// `ORCHESTRATECTL_HOME` (which would race with other unit tests). The public
+/// `TASKFLEET_HOME` (which would race with other unit tests). The public
 /// wrappers (`lookup` / `reserve` / `release`) resolve the root via `home` and
 /// delegate.
 fn file_path_in(root: &Path, repo: Option<&str>, branch: Option<&str>, key: &str) -> PathBuf {

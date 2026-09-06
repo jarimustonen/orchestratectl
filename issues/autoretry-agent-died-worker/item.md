@@ -24,7 +24,7 @@ Give the top-level single-node autonomous worker a BOUNDED auto-retry on agent-d
 - A retry must start from a clean worktree at the run's source branch (the dead agent left the worktree at base with no commits in the empty-handed case).
 - Interactive kind: do NOT auto-retry (a human is driving); this is for autonomous single-node kinds.
 - Emit durable events for each retry attempt so the history is auditable (attempt N, reason).
-- Hot files: crates/octl-cli/src/supervise/* (mod.rs agent-died synthesis / reconcile path), possibly events.rs/reducer.rs for a retry event. Preserve every state-integrity invariant and the teardown preservation gates.
+- Hot files: crates/taskfleet-cli/src/supervise/* (mod.rs agent-died synthesis / reconcile path), possibly events.rs/reducer.rs for a retry event. Preserve every state-integrity invariant and the teardown preservation gates.
 
 ## Acceptance
 - An autonomous worker that dies agent-died with no committed work is re-spawned up to max-attempts before the run is terminalized failed; each attempt is a durable event.

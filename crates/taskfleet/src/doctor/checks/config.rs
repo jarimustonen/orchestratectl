@@ -29,12 +29,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
 
     let is_custom = matches!(
         source,
-        Some(
-            crate::home::HomeSource::CanonicalExplicit
-                | crate::home::HomeSource::LegacyExplicit
-                | crate::home::HomeSource::EqualExplicit
-                | crate::home::HomeSource::InternalWorker
-        )
+        Some(crate::home::HomeSource::CanonicalExplicit | crate::home::HomeSource::InternalWorker)
     );
 
     if !root.exists() {

@@ -1,5 +1,5 @@
 //! `binary.commit` — disclose the running binary's build commit and, when
-//! invoked from a Taskfleet canonical or compatibility source checkout,
+//! invoked from a Taskfleet source checkout,
 //! compare it with that checkout's `HEAD`.
 //!
 //! A mismatch is advisory: released binaries and branch work commonly differ
@@ -16,7 +16,7 @@ use crate::doctor::check::CheckResult;
 
 use super::Ctx;
 
-const BUILD_COMMIT: &str = env!("ORCHESTRATECTL_GIT_COMMIT");
+const BUILD_COMMIT: &str = env!("TASKFLEET_GIT_COMMIT");
 
 pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
     vec![result_for(BUILD_COMMIT, repository_head())]
@@ -140,15 +140,7 @@ fn is_taskfleet_checkout(root: &Path) -> bool {
     if !root.join("Cargo.toml").is_file() {
         return false;
     }
-    [
-        ("crates/taskfleet/Cargo.toml", "taskfleet"),
-        ("compat/orchestratectl/Cargo.toml", "orchestratectl"),
-        // Historical 0.5.x source checkouts remain applicable while the
-        // compatibility package is supported.
-        ("crates/octl-cli/Cargo.toml", "orchestratectl"),
-    ]
-    .into_iter()
-    .any(|(path, expected)| manifest_package_is(&root.join(path), expected))
+    manifest_package_is(&root.join("crates/taskfleet/Cargo.toml"), "taskfleet")
 }
 
 fn manifest_package_is(path: &Path, expected: &str) -> bool {

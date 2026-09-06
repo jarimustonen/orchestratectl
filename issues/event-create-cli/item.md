@@ -5,7 +5,7 @@ type: feature
 assignee: jari
 status: done
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 commits:
 - hash: bac6e0f9fed42f6aa0ede725811d706c7bf0ceaa
   summary: 'feat(event-create-cli): sanctioned write path for events'
@@ -18,4 +18,4 @@ closed: 2026-06-12
 
 ## Description
 
-orchestratectl event create --kind --node-id --from-file [--idempotency-key] — sanctioned write path for skill-shim and external bash tools. Must run the reducer to update affected projection files (manifest.json, nodes/*.json, etc.) atomically within the same flock window (per design.md §2.3). Validates kind against the known event-kind set; unknown rejected. Implements --dry-run. **Depends on** state-schema-crate.
+taskfleet event create --kind --node-id --from-file [--idempotency-key] — sanctioned write path for skill-shim and external bash tools. Must run the reducer to update affected projection files (manifest.json, nodes/*.json, etc.) atomically within the same flock window (per design.md §2.3). Validates kind against the known event-kind set; unknown rejected. Implements --dry-run. **Depends on** state-schema-crate.

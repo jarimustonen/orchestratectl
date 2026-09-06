@@ -28,7 +28,7 @@ A5 delivered the visibility surface (`run wait` attention-required settle,
 `run list` / `run show` resume context). Per-node cancel is a genuinely
 separate concern, not a natural rider on that surface:
 
-- It needs a NEW core transaction in the hot `crates/octl-core/src/cancel.rs`
+- It needs a NEW core transaction in the hot `crates/taskfleet-core/src/cancel.rs`
   + reducer path — cancel ONE live node and append its terminal cancel
   `node.report`, then roll the run up to `Cancelled` ONLY when all remaining
   nodes are terminal (today's `cancel_run` cancels *every* live node and
@@ -72,7 +72,7 @@ Coordinates with [[typed-supervisor-outcomes]] and the A5 attention surface.
   projection is still cancellable; an absent id is `node_not_found`).
 - [x] Tests: core `cancel_node` unit tests, CLI integration (partial cancel +
   eventual rollup), supervise_gates end-to-end rollup-to-cancelled with
-  non-force teardown; help snapshots + `octl-run-overview` SKILL + CHANGELOG.
+  non-force teardown; help snapshots + `taskfleet-run-overview` SKILL + CHANGELOG.
 - [x] `/llm-review` (3 models) + `/assess-findings` run; confirmed localized FIX
   findings applied (C1, C4, S2/S3, M2); `rollup_status` log-authoritative
   deferred to [[rollup-status-log-authoritative]].

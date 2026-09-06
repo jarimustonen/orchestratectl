@@ -13,7 +13,7 @@ closed: 2026-06-29
 
 ## Tausta
 
-`orchestratectl spinoff approve` -komento kutsuu nykyään `issuectl new` -prosessia ennen kuin se hankkii ajoon liittyvän `flock`-lukon (`approve.rs:111`). Kahden samanaikaisen hyväksynnän tapauksessa molemmat kutsuvat `issuectl`:in ja luovat omat issue-tikettinsä — vain toinen voittaa tapahtumalokin kilpailun, ja toinen jättää orpoja tikettejä ulkoiseen seurantaan. Vaikka `--idempotency-key` on tarjolla, sitä ei välitetä `issuectl`:lle, joten lupa ei kata ulkoista sivuvaikutusta.
+`taskfleet spinoff approve` -komento kutsuu nykyään `issuectl new` -prosessia ennen kuin se hankkii ajoon liittyvän `flock`-lukon (`approve.rs:111`). Kahden samanaikaisen hyväksynnän tapauksessa molemmat kutsuvat `issuectl`:in ja luovat omat issue-tikettinsä — vain toinen voittaa tapahtumalokin kilpailun, ja toinen jättää orpoja tikettejä ulkoiseen seurantaan. Vaikka `--idempotency-key` on tarjolla, sitä ei välitetä `issuectl`:lle, joten lupa ei kata ulkoista sivuvaikutusta.
 
 ## Milloin tämä näkyy käyttäjälle
 

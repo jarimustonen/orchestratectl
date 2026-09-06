@@ -126,7 +126,7 @@ pub enum Error {
     /// it, so a replaced `<root>/runs/<id>` cannot redirect writes outside the
     /// run tree.
     ///
-    /// **Trust model.** The state root is `$HOME/.orchestratectl/` — a per-user
+    /// **Trust model.** The state root is `$HOME/.taskfleet/` — a per-user
     /// `0700` directory, not a shared multi-user mount. This guards against an
     /// accidentally- or maliciously-replaced subtree component, not a concurrent
     /// attacker who already holds write access to the state root.

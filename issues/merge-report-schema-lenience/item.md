@@ -20,7 +20,7 @@ closed: 2026-08-15
 ## Description
 
 ## Observed (glasspad stint 2026-08-11/12)
-Two independent autonomous spinoff workers, in the same session, wrote their terminal report's `spinoff_proposals[]` with the WRONG field names — `title`/`detail` instead of the schema's `proposed_title` / `proposed_kind` / `rationale`. `orchestratectl run merge --report-file <f>` validates the report BEFORE the merge, so the schema violation (`spinoff_proposals[0].proposed_title must be a non-empty string`) **rejected the whole report and blocked the merge** of already-committed, green, /llm-review'd code. In the B2 case the run sat `pending` (worktree looked stuck) until the worker noticed, rewrote the report, and re-ran `run merge`.
+Two independent autonomous spinoff workers, in the same session, wrote their terminal report's `spinoff_proposals[]` with the WRONG field names — `title`/`detail` instead of the schema's `proposed_title` / `proposed_kind` / `rationale`. `taskfleet run merge --report-file <f>` validates the report BEFORE the merge, so the schema violation (`spinoff_proposals[0].proposed_title must be a non-empty string`) **rejected the whole report and blocked the merge** of already-committed, green, /llm-review'd code. In the B2 case the run sat `pending` (worktree looked stuck) until the worker noticed, rewrote the report, and re-ran `run merge`.
 
 ## Why it's a foot-gun
 - `spinoff_proposals` is **advisory** (follow-up suggestions the parent may ignore), yet a typo in it blocks the *actual code merge* — the high-value, irreversible-ish operation — on the *lowest-value* part of the payload.
@@ -36,7 +36,7 @@ Keep required top-level fields (`success`) strict; only the advisory arrays shou
 
 ## Repro
 ```
-orchestratectl run merge <run-id> --report-file f.json
+taskfleet run merge <run-id> --report-file f.json
 # where f.json has spinoff_proposals: [{ "title": "...", "detail": "..." }]
 # → error.code schema_violation, merge NOT performed, node stays live/pending
 ```

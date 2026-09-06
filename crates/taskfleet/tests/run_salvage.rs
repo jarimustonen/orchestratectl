@@ -1,4 +1,4 @@
-//! Integration tests for `orchestratectl run salvage` (design.md §2.2 / A3,
+//! Integration tests for `taskfleet run salvage` (design.md §2.2 / A3,
 //! issue `run-salvage-command`).
 //!
 //! The fenced manual finish: for an `attention-required` run (a worker that
@@ -6,7 +6,7 @@
 //! run, salvage verifies the prior worker's state, fences a live one, and drives
 //! `run merge` from the preserved worktree. These tests seed run state directly
 //! via the core append path (no live supervisor, deterministic) and stub the
-//! merge backend via `OCTL_MERGE_SH`, exactly like `run_merge.rs`.
+//! merge backend via `TASKFLEET_MERGE_SH`, exactly like `run_merge.rs`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -129,7 +129,7 @@ fn attention_required_run_is_finished() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0);
     let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
+        .env("TASKFLEET_MERGE_SH", &merge_sh)
         .args([
             "--output", "json", "run", "salvage", &run_id, "--source", "main",
         ])

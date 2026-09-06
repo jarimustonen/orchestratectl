@@ -325,7 +325,7 @@ pub struct PositionalInfo {
 /// Synthetic id for the global help flag injected into the lenient-parse
 /// clone (see [`resolve_help_request`]). Double-underscore prefix keeps it
 /// clear of any real arg id.
-const HELP_FLAG_ID: &str = "__octl_help_request";
+const HELP_FLAG_ID: &str = "__taskfleet_help_request";
 
 /// Id of the global `--output` arg, read back from the lenient parse and
 /// used to register its custom-parser metadata. Kept `pub(crate)` so a test
@@ -389,7 +389,7 @@ pub enum HelpRequest {
 
 /// Synthetic id for the global `--depth` arg injected into the lenient-parse
 /// clone (see [`resolve_help_request`]).
-const DEPTH_ARG_ID: &str = "__octl_help_depth";
+const DEPTH_ARG_ID: &str = "__taskfleet_help_depth";
 
 /// Resolve a structured-help request from raw argv (excluding argv\[0\])
 /// via a clap *lenient* parse.

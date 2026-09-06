@@ -16,7 +16,7 @@ The `build-local-artifacts (aarch64-apple-darwin)` job of the cargo-dist **Relea
 workflow (runs on the self-hosted `hauis` mac runner) fails at `actions/checkout@v4`:
 
 ```
-fatal: unable to access 'https://github.com/jarimustonen/orchestratectl/': The requested URL returned error: 400
+fatal: unable to access 'https://github.com/jarimustonen/taskfleet/': The requested URL returned error: 400
 The process '/opt/homebrew/bin/git' failed with exit code 128
 ```
 
@@ -28,8 +28,8 @@ The process '/opt/homebrew/bin/git' failed with exit code 128
 So the runner regressed between ~08:10 and ~09:45 today. Persistent, not transient.
 
 ## Impact
-- crates.io is fine: `octl-core`/`orchestratectl` **0.1.3** published (and 0.1.2 before it).
-- **GitHub Release prebuilt binaries + the Homebrew tap are STUCK at 0.1.1** — every release since fails to publish assets. `brew upgrade jarimustonen/orchestratectl/orchestratectl` still installs 0.1.1.
+- crates.io is fine: `taskfleet-core`/`taskfleet` **0.1.3** published (and 0.1.2 before it).
+- **GitHub Release prebuilt binaries + the Homebrew tap are STUCK at 0.1.1** — every release since fails to publish assets. `brew upgrade jarimustonen/taskfleet/taskfleet` still installs 0.1.1.
 
 ## Likely cause (needs on-machine inspection of `hauis`)
 `/opt/homebrew/bin/git` on the runner gets HTTP 400 accessing github.com — smells like a

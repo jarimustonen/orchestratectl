@@ -18,7 +18,7 @@ closed: 2026-08-16
 
 ```
 failures:
-thread 'signal_exit_codes_and_payload' (16665) panicked at crates/octl-cli/tests/supervise_gates.rs:1191:9:
+thread 'signal_exit_codes_and_payload' (16665) panicked at crates/taskfleet-cli/tests/supervise_gates.rs:1191:9:
 assertion `left == right` failed: SIGTERM must exit 143, got ExitStatus(unix_wait_status(512))
 test result: FAILED. 24 passed; 1 failed; 0 ignored
 ##[error]Process completed with exit code 101.
@@ -28,7 +28,7 @@ test result: FAILED. 24 passed; 1 failed; 0 ignored
 
 ## Why this matters as a regression
 
-This exact test area was hardened and marked done in `@supervise-gates-signal-wait-hardening` and `@supervise-gate-test-flake`. The failure recurring means that hardening did not fully hold — either a genuine signal-handling regression on `main`, or the test is still racy under `--release` load. Reproduce locally with `cargo test --locked --release -p octl-cli signal_exit_codes_and_payload` before deciding fix vs. re-harden.
+This exact test area was hardened and marked done in `@supervise-gates-signal-wait-hardening` and `@supervise-gate-test-flake`. The failure recurring means that hardening did not fully hold — either a genuine signal-handling regression on `main`, or the test is still racy under `--release` load. Reproduce locally with `cargo test --locked --release -p taskfleet-cli signal_exit_codes_and_payload` before deciding fix vs. re-harden.
 
 ## Fix direction
 
@@ -47,7 +47,7 @@ CliError::system(...)` → exit 2, bypassing the §7.8 clean-shutdown that emits
 sub-millisecond locally but widens under `--release` CPU load (the `supervisor.started`
 flock+fsync + tail seeding run inside it), so it only bit on loaded CI.
 
-Fix (`crates/octl-cli/src/supervise/mod.rs`): a dedicated **boot-signal
+Fix (`crates/taskfleet-cli/src/supervise/mod.rs`): a dedicated **boot-signal
 short-circuit** right after the boot destructure — on `SIGNAL_RECEIVED != 0` it
 emits `supervisor.exited{reason:"signal"}`, removes the pid file, reports the
 readiness error to the parent (AFTER the durable cleanup, so no teardown race),
@@ -56,7 +56,7 @@ epilogue, so the two exit paths cannot drift). The loop-setup side effects never
 run for a supervisor that is only going to shut down.
 
 Regression guard: `signal_during_boot_exits_143` (parameterized over SIGTERM→143
-and SIGINT→130) uses a bounded `OCTL_TEST_SLOW_BOOT` signal-barrier that holds
+and SIGINT→130) uses a bounded `TASKFLEET_TEST_SLOW_BOOT` signal-barrier that holds
 boot until the signal is provably observed in the boot window — deterministic,
 and it failed (`exit 2`) against the pre-fix code. Reviewed via `/llm-review`
 (4 models) + inline `/assess-findings`; see

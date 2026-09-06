@@ -10,7 +10,7 @@ closed: 2026-06-29
 
 # Golden test pinning idempotency-key hash output
 
-_Source: crates/octl-cli/src/idempotency.rs_
+_Source: crates/taskfleet-cli/src/idempotency.rs_
 
 ## Description
 

@@ -4,7 +4,6 @@ updated: 2026-09-06
 type: bug
 status: fixed
 priority: high
-related: ['@taskfleet-release-0-6-0']
 lane: taskfleet-rename
 lane_seq: 111
 collision: [scripts/verify-release-github-policy.sh, .github/workflows/release.yml, .github/workflows/publish-crates.yml]

@@ -37,7 +37,7 @@ The combined v1 is small:
   launch contracts, or claims that a local profile is mechanically unable to
   spawn another agent.
 - The existing local `secure` profile is usable. Its behavior comes from its
-  configured model and instructions, not an orchestratectl security boundary.
+  configured model and instructions, not an taskfleet security boundary.
 - Autonomous selection accepts only a user-configured pi candidate declaring the
   v1 adapter. Claude is eligible only when interaction is explicitly
   interactive until a real Claude adapter exists.
@@ -89,7 +89,7 @@ command's ordinary rules; the reducer never acts on telemetry alone.
 5. The external pi adapter translates documented public lifecycle events into
    `agent_active`, `tool_running`, `settled`, or `shutdown`, sends state changes,
    and refreshes every 30 seconds.
-6. Orchestratectl validates the current attempt and atomically replaces one
+6. Taskfleet validates the current attempt and atomically replaces one
    bounded sample. `run show` reports the last told state, age, and current/stale
    freshness using observational wording.
 7. Completion and teardown continue through `run merge`, told failures, typed
@@ -122,7 +122,7 @@ leave the profile's local residency.
 | Repository config | Profile-name selection only | Commands, adapter paths, executable definitions |
 | Profile resolver | Precedence, bounded candidate order, residency/telemetry-preserving fallback, compact requested/selected output | Permissions, package trust, samples |
 | External pi adapter | Public pi event translation, bounded in-memory tool tracking, coalescing/refresh, privacy filtering | Durable truth, outcomes, teardown |
-| Orchestratectl telemetry | Strict update DTO, current-attempt check, bounded atomic sample, freshness/read surfaces | Progress diagnosis, retry, settlement |
+| Taskfleet telemetry | Strict update DTO, current-attempt check, bounded atomic sample, freshness/read surfaces | Progress diagnosis, retry, settlement |
 | Existing run control | Reports, told exits, merge transaction/recovery, typed outcomes, cleanup safety | Telemetry shortcuts |
 
 ## Post-decision assessment of existing telemetry candidates

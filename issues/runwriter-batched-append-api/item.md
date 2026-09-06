@@ -4,7 +4,7 @@ updated: 2026-06-29
 type: improvement
 status: wontfix
 priority: normal
-epic: orchestratectl-mvp
+epic: taskfleet-mvp
 closed: 2026-06-29
 ---
 

@@ -13,7 +13,7 @@ provenance: agent:issuectl-stint-wrapup
 
 ## Problem
 
-`orchestratectl run list` has no way to filter by repository. Runs from every repo on the
+`taskfleet run list` has no way to filter by repository. Runs from every repo on the
 machine share one flat list (1010 runs on this machine at time of filing), so an
 orchestrator opening a session in repo X must inspect runs one by one to find out which
 ones actually belong to X.
@@ -34,11 +34,11 @@ Both are plausible issuectl work (issuectl has a `doctor` subcommand, and
 disambiguated them:
 
 ```
-$ orchestratectl run show 01m0evreacbddfg5z84w4pmw69 --output json | jq -r '.data.worktree_path'
-/Users/jari/Sources/orchestratectl__worktrees/wt-01m0evreac-doctor-report-binary-commit
+$ taskfleet run show 01m0evreacbddfg5z84w4pmw69 --output json | jq -r '.data.worktree_path'
+/Users/jari/Sources/taskfleet__worktrees/wt-01m0evreac-doctor-report-binary-commit
 ```
 
-They are **orchestratectl** runs, not issuectl runs.
+They are **taskfleet** runs, not issuectl runs.
 
 The risk is concrete: an orchestrator that mistakes a sibling repo's run for its own can
 conclude it has live workers holding resources it does not, or worse, treat a foreign run
@@ -52,8 +52,8 @@ practice — but a written warning is a weaker fix than a filter.
 A repo/worktree filter on `run list`, for example:
 
 ```
-orchestratectl run list --repo /Users/jari/Sources/issuectl
-orchestratectl run list --repo .        # the cwd's repo
+taskfleet run list --repo /Users/jari/Sources/issuectl
+taskfleet run list --repo .        # the cwd's repo
 ```
 
 Or, at minimum, include the source repo in each `run list --output json` row so a caller

@@ -13,16 +13,16 @@ closed: 2026-07-25
 
 ## Description
 
-`orchestratectl run merge` returned success but did NOT tear down the worktree, branch, or tmux window. The per-run supervisor reached a terminal state without performing (or completing) the teardown it owns, leaving the worktree stuck.
+`taskfleet run merge` returned success but did NOT tear down the worktree, branch, or tmux window. The per-run supervisor reached a terminal state without performing (or completing) the teardown it owns, leaving the worktree stuck.
 
 ## Environment
-- orchestratectl 0.1.0 (commit a54f0ff), macOS (gertrud, tw session)
+- taskfleet 0.1.0 (commit a54f0ff), macOS (gertrud, tw session)
 - Run kind: the interactive orchestrator/`stint` worktree (window icon `💻`), branch `wt/01kxv2aak3-stint-review-skill-family`, source `main`.
 - Run id: `01kxv2aak3wyh694yk5jm7ee6v`, node `n-0001`.
 
 ## Repro
 1. Work in an interactive worktree run to completion; commit everything (tree clean).
-2. Run `orchestratectl run merge "$run_id" --report-file <valid §7.3 payload>`.
+2. Run `taskfleet run merge "$run_id" --report-file <valid §7.3 payload>`.
 3. Observe the success envelope, then check the worktree / branch / tmux window.
 
 ## Expected
@@ -38,7 +38,7 @@ The merge itself succeeded (branch landed on `main`, verified in the canonical c
 - **Branch still present:** `wt/01kxv2aak3-stint-review-skill-family` still exists (still checked out in the stuck worktree).
 - **tmux window still present:** `default:4  🏠 💻 wt-01kxv2aak3-stint-review-skill-family`.
 - **No supervisor process for this run:** `ps` shows supervisors for other live runs but none for `01kxv2aak3…` — the supervisor for this run has exited.
-- **`orchestratectl run show 01kxv2aak3wyh694yk5jm7ee6v` returns null `status`/`lifecycle`/`supervisor`** (the run record reads empty/terminal but the physical resources were never reclaimed).
+- **`taskfleet run show 01kxv2aak3wyh694yk5jm7ee6v` returns null `status`/`lifecycle`/`supervisor`** (the run record reads empty/terminal but the physical resources were never reclaimed).
 
 So the terminal transition was recorded (`report_seq: 7`, `supervisor.state: terminal`) and the supervisor exited, but the teardown side effects (worktree remove, branch delete, tmux kill-window) did not run or did not complete. The user had to remove the worktree, branch, and window by hand.
 

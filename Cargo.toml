@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/taskfleet-core", "crates/taskfleet", "compat/orchestratectl"]
+members = ["crates/taskfleet-core", "crates/taskfleet"]
 
 [workspace.package]
 version = "0.6.1"

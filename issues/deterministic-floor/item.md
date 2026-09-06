@@ -13,16 +13,16 @@ closed: 2026-07-22
 
 The mechanical correctness FLOOR the code-pipeline needs below LLM verify
 (design.md §4 — the panel's #1 non-negotiable). Built as a standalone,
-fully-tested module of pure functions in `crates/octl-cli/src/floor/`, behind
+fully-tested module of pure functions in `crates/taskfleet-cli/src/floor/`, behind
 the seam (design §14): **not** wired into `run merge`/the supervisor yet —
 behavior-preserving scaffolding + tests that T5 will plug into the merge gate.
 
-## What landed (`crates/octl-cli/src/floor/`)
+## What landed (`crates/taskfleet-cli/src/floor/`)
 
 - **`snapshot.rs`** — the pure value model: `TestSnapshot` (passed/failed/ignored
   id sets), `ClippySnapshot`, optional `Coverage`, `RunSnapshot`, and
   `BaselineSnapshot` (pinned to the fork ref) with `sha256` hashing that projects
-  down to the `octl_core::plan::Baseline` hash-only shape. Plus `CheckRun`.
+  down to the `taskfleet_core::plan::Baseline` hash-only shape. Plus `CheckRun`.
 - **`parse.rs`** — pure parsers (no I/O): libtest human output → `TestSnapshot`,
   clippy `--message-format=short` → `ClippySnapshot`, and a crude `assert*!`
   counter for assertion-density. Exhaustively fixture-tested.
@@ -35,7 +35,7 @@ behavior-preserving scaffolding + tests that T5 will plug into the merge gate.
   checks/tests/clippy via `sh -c`; count assertions on disk / at a git ref via
   `git show`; `git diff --name-only` for changed files). Keeps the gates pure.
 
-Reuses `octl_core::plan::{Check, Baseline}` (does not redefine them). Makes no
+Reuses `taskfleet_core::plan::{Check, Baseline}` (does not redefine them). Makes no
 LLM calls and no judgments — deterministic set/inequality rules only. Touches no
 event-append/reducer/lock path (state-integrity invariants).
 

@@ -18,7 +18,7 @@ closed: 2026-08-17
 
 ## Symptom
 
-`orchestratectl skill install --force` aborts the WHOLE install with `refused_overwrite` when any target path already exists as a **symlink**, even though `--force` was passed:
+`taskfleet skill install --force` aborts the WHOLE install with `refused_overwrite` when any target path already exists as a **symlink**, even though `--force` was passed:
 
 ```
 {"error":{"code":"refused_overwrite","message":"/Users/jari/.claude/skills/worktree/SKILL.md already exists; pass --force to overwrite","invalid_value":".../worktree/SKILL.md"}}
@@ -29,7 +29,7 @@ The message says "pass --force to overwrite" — but `--force` *was* passed. It 
 ## Repro
 
 1. Have `~/.claude/skills/worktree/SKILL.md` be a symlink (e.g. a stale dotfiles link whose target was removed — a **dangling** symlink triggers it too).
-2. `orchestratectl skill install --force`
+2. `taskfleet skill install --force`
 3. Aborts with `refused_overwrite`; no skills installed.
 
 ## Expected
@@ -38,7 +38,7 @@ The message says "pass --force to overwrite" — but `--force` *was* passed. It 
 
 ## Context / real-world hit
 
-Hit during the orchestratectl→Homebrew-tap migration (issue homebrew-tap-distribution): machines still carrying the old dotfiles-linked worktree skills had dangling `~/.claude/skills/<name>/SKILL.md` symlinks (sources removed when those skills became binary-owned). Worked around in the homebase setup hook by pruning broken symlinks in the owned skill dirs BEFORE calling `skill install --force`. That workaround shouldn't be necessary.
+Hit during the taskfleet→Homebrew-tap migration (issue homebrew-tap-distribution): machines still carrying the old dotfiles-linked worktree skills had dangling `~/.claude/skills/<name>/SKILL.md` symlinks (sources removed when those skills became binary-owned). Worked around in the homebase setup hook by pruning broken symlinks in the owned skill dirs BEFORE calling `skill install --force`. That workaround shouldn't be necessary.
 
 ## Side note
 

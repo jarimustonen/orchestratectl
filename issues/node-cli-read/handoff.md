@@ -13,27 +13,27 @@ high-confidence FIX items were applied in the follow-up commit; the
 items below are captured for future issues.
 
 The shared themes are: (a) the `event create` / `node report` write
-paths copy too much code that should live in `octl-core`, and (b)
+paths copy too much code that should live in `taskfleet-core`, and (b)
 the reducer is permissive in places where the CLI now defends. The
 reducer-side hardening overlaps with `run-cli-read/handoff.md` D4–D5
 and should land alongside that work.
 
 ---
 
-## D1. `find_prior_event` / `find_prior_report` should be a shared helper in `octl-core`
+## D1. `find_prior_event` / `find_prior_report` should be a shared helper in `taskfleet-core`
 
 **Raised by:** Gemini (#7), GPT-5.5 (#16), Opus (#16), DeepSeek (#6)
 **Severity:** maintenance — duplicate scanners drift independently
 
-`crates/octl-cli/src/event/create.rs::find_prior_event` and
-`crates/octl-cli/src/node/report.rs::find_prior_report` are
+`crates/taskfleet-cli/src/event/create.rs::find_prior_event` and
+`crates/taskfleet-cli/src/node/report.rs::find_prior_report` are
 near-identical line-by-line scanners of `events.jsonl` looking for
 a matching `idempotency_key`. They share the `ProbeFields` /
 `FullEventForReplay` deserialise types and the same torn-line
 tolerance.
 
 **Recommendation:** spin off `idempotency-lookup-into-core`. Lift
-the scanner into `octl_core::events` taking the kind as a parameter
+the scanner into `taskfleet_core::events` taking the kind as a parameter
 and returning a typed `PriorEvent { seq, node_id, data }`. Both CLI
 sites then call one function and the torn-final-line vs.
 middle-corrupt-line behavior (D2) is fixed in one place.
@@ -62,19 +62,19 @@ failure here implies inter-line corruption.
 
 ---
 
-## D3. Move §7.3 payload validation into `octl-core`
+## D3. Move §7.3 payload validation into `taskfleet-core`
 
 **Raised by:** Opus (#38)
 **Severity:** consistency — supervisor can't reuse the CLI's validator
 
-`validate_report_payload` lives in `crates/octl-cli/src/node/report.rs`
+`validate_report_payload` lives in `crates/taskfleet-cli/src/node/report.rs`
 and returns `CliError` directly. When `supervisor-process` lands and
 needs to validate child reports before consuming them (§7.3 step 3),
 it cannot call the same function — it would have to copy it or pull
 the CLI as a dependency.
 
 **Recommendation:** move the validator and its sub-validators to
-`octl_core::report` returning a domain `ReportValidationError`, and
+`taskfleet_core::report` returning a domain `ReportValidationError`, and
 have the CLI map that to `CliError`. Same shape as the
 proposed reducer-validation work in `run-cli-read/handoff.md` D5.
 
@@ -85,7 +85,7 @@ proposed reducer-validation work in `run-cli-read/handoff.md` D5.
 **Raised by:** Gemini (#1)
 **Severity:** correctness — bypasses around CLI validation persist invalid state
 
-`apply_node_report` (in `crates/octl-core/src/reducer.rs`) treats
+`apply_node_report` (in `crates/taskfleet-core/src/reducer.rs`) treats
 missing `success` AND `cancelled` as "no status change" and silently
 leaves the node in its prior status with `last_report` populated.
 The CLI now rejects this shape, but the reducer is the canonical
@@ -145,7 +145,7 @@ canonical lookup, no longer per-verb).
 
 `node report` (and `event create`) only accept `--from-file`. An
 interactive agent skill typically generates the payload in-memory
-and would prefer `cat report.json | orchestratectl node report
+and would prefer `cat report.json | taskfleet node report
 ... --from-stdin`. Minor.
 
 **Recommendation:** add `--from-stdin` (mutually exclusive with

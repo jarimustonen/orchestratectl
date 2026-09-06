@@ -6,7 +6,7 @@ status: fixed
 priority: normal
 provenance: other
 provenance_detail: Observed during ADR 0002 R8 exact-SHA integrated validation
-source_ref: orchestratectl:01m1hw78dn6qee8an2ysbfdns9/validation-failure:publish-crates-fixture-symlink-chmod
+source_ref: taskfleet:01m1hw78dn6qee8an2ysbfdns9/validation-failure:publish-crates-fixture-symlink-chmod
 originating_run: 01m1hw78dn6qee8an2ysbfdns9
 originating_run_kind: spinoff
 lane: taskfleet-rename
@@ -29,7 +29,7 @@ Main CI run `33678068490` for exact commit `fa04841ad74c0ea935cc8c81a83a90a91767
 
 The test creates `$tmp/bin/*` entries as symlinks to host tools and then runs `chmod +x "$tmp/bin/"*`. On GitHub's Linux runner, `chmod` dereferences those symlinks and attempts to change permissions on system executables such as `/usr/bin/awk`, `/usr/bin/bash`, and `/usr/bin/jq`. The runner rejects that with `Operation not permitted`, causing exit 1 before the registry protocol assertions run. The same script passes on macOS because the host permission behavior differs.
 
-Evidence: https://github.com/jarimustonen/orchestratectl/actions/runs/33678068490/job/100407635030
+Evidence: https://github.com/jarimustonen/taskfleet/actions/runs/33678068490/job/100407635030
 
 ## Impact
 

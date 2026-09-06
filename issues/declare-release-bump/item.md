@@ -11,13 +11,13 @@ closed: 2026-08-14
 
 ## Description
 
-Release-readiness prep for the upcoming orchestratectl 0.2.0 cut. ossctl 0.5.0's
+Release-readiness prep for the upcoming taskfleet 0.2.0 cut. ossctl 0.5.0's
 engine-owned `release cut --bump major|minor|patch` bumps `[workspace.package]
 version`, rewrites the intra-workspace `=<ver>` pin, refreshes `Cargo.lock`,
 finalizes the CHANGELOG, then runs a contract-declared `release.bump_hook` (folding
 its edits into the bump commit) and **fails closed** if the hook exits non-zero or
 leaves the version altered. The `version` command output is snapshotted in
-`crates/octl-cli/tests/snapshots/envelope_snapshots__version_{text,json,jsonl}.snap`,
+`crates/taskfleet-cli/tests/snapshots/envelope_snapshots__version_{text,json,jsonl}.snap`,
 which bake the literal crate version and go stale on a bump — this exact gap turned
 `main` CI red after the v0.1.8 tag. This issue declares + validates the `bump_hook`
 that auto-regenerates those snapshots during the cut. NOT the 0.2.0 cut itself.
@@ -25,10 +25,10 @@ that auto-regenerates those snapshots during the cut. NOT the 0.2.0 cut itself.
 ## Chosen hook command
 
 ```
-INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
+INSTA_UPDATE=always cargo test -p taskfleet --test envelope_snapshots
 ```
 
-**Why this form** (over `cargo insta test --accept -p orchestratectl` or a `.snap.new`
+**Why this form** (over `cargo insta test --accept -p taskfleet` or a `.snap.new`
 find/mv accept loop):
 - **Dependency-free.** `cargo-insta` is NOT installed here (`which cargo-insta` → not
   found) and must not be assumed present in a CI/cut environment. `INSTA_UPDATE=always`
@@ -45,7 +45,7 @@ find/mv accept loop):
 
 ## Step 3 — scratch-bump proof (0.1.8 → 0.2.0, discarded)
 
-Manually bumped `[workspace.package] version` 0.1.8→0.2.0 + the `octl-core` `=0.1.8`→
+Manually bumped `[workspace.package] version` 0.1.8→0.2.0 + the `taskfleet-core` `=0.1.8`→
 `=0.2.0` pin (mirroring the executor's version edit), rebuilt, ran the hook:
 
 - (a) all three `version_*` snapshots now embed `0.2.0` (grep → single token `0.2.0`).
@@ -54,7 +54,7 @@ Manually bumped `[workspace.package] version` 0.1.8→0.2.0 + the `octl-core` `=
 - (c) `cargo test --workspace` → **green** (0 failed).
 - (d) the hook changed **only** the three snapshots — `git diff --stat` after the hook
   showed exactly `version_{json,jsonl,text}.snap`; the other diff entries (`Cargo.toml`,
-  `crates/octl-cli/Cargo.toml`, `Cargo.lock`) are the executor's version edit, not the
+  `crates/taskfleet-cli/Cargo.toml`, `Cargo.lock`) are the executor's version edit, not the
   hook's. No `.snap.new` leftovers.
 
 Scratch bump fully reverted (`git checkout`); repo back at 0.1.8, snapshots matching.
@@ -69,11 +69,11 @@ the older 0.2.2, unused).
 - `release plan --bump minor --json`:
   - (a) surfaces `bump.bump_hook` verbatim + a "review it as trusted code" warning
     echoing the command.
-  - (b) derives BOTH crates as dep-ordered crates.io publish units — `targets: [octl-core,
-    orchestratectl]` (library first) — even though the contract declares only
-    `orchestratectl` as a target.
-  - (c) carries the homebrew tap: `homebrew_tap: jarimustonen/homebrew-orchestratectl`.
-  - `pin_rewrites: [orchestratectl→octl-core =0.1.8→=0.2.0]`; `phases: [bump, dry-run-all,
+  - (b) derives BOTH crates as dep-ordered crates.io publish units — `targets: [taskfleet-core,
+    taskfleet]` (library first) — even though the contract declares only
+    `taskfleet` as a target.
+  - (c) carries the homebrew tap: `homebrew_tap: jarimustonen/homebrew-taskfleet`.
+  - `pin_rewrites: [taskfleet→taskfleet-core =0.1.8→=0.2.0]`; `phases: [bump, dry-run-all,
     build-all, publish-all, tag, dist]`.
 
 ## Contract change discovered during step 4c
@@ -84,7 +84,7 @@ d.homebrew_tap.clone())`), NOT from `dist-workspace.toml`. The `dist` phase is
 unconditional (fixed in `PlanPhase::SEQUENCE`), so it appeared even while the tap was
 `null`. To make the plan carry the tap (criterion 4c), added a v2 `distribution:` block
 to `OSS-RELEASE.md` mirroring `dist-workspace.toml` **exactly** (adapter cargo-dist;
-installers [shell, homebrew]; tap `jarimustonen/homebrew-orchestratectl`; platforms
+installers [shell, homebrew]; tap `jarimustonen/homebrew-taskfleet`; platforms
 aarch64-darwin + aarch64/x86_64-linux-gnu) — zero drift, correct v2 modeling (the
 `distribution` layer coexists with `targets`; it is NOT a crates.io target).
 

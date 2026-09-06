@@ -14,7 +14,7 @@ closed: 2026-06-29
 
 Spin-off from core-append-and-apply-api multi-model review (gemini/gpt-5.5/opus, finding #4).
 
-The supervisor writes two node-projection fields directly via the (deliberately still-`pub`) `octl_core::write_node`, holding the run flock, with NO backing event:
+The supervisor writes two node-projection fields directly via the (deliberately still-`pub`) `taskfleet_core::write_node`, holding the run flock, with NO backing event:
 - `Node.supervisor_pid` (supervise/mod.rs ~601, on child supervisor attach)
 - `Node.last_processed_report_seq_by_child` (supervise/reducer.rs ~263-270, the report cursor mirror)
 

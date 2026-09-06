@@ -5,7 +5,7 @@
 //! The four layers, highest priority first:
 //!
 //! 1. **flag** — `--harness <name>` on `run create`.
-//! 2. **env** — `TASKFLEET_HARNESS` (with the bounded `ORCHESTRATECTL_HARNESS` alias). An empty
+//! 2. **env** — `TASKFLEET_HARNESS`. An empty
 //!    value counts as unset and falls through.
 //! 3. **config file** — `[harness]` in `config.toml`: a `per_kind[<kind>]`
 //!    override wins over the section `default`. This is where a repo/user can

@@ -21,7 +21,7 @@ run show cannot identify a run repository once its worktree is gone
 
 ## Observed
 
-`orchestratectl run show <id> --output json` exposes no field naming the repository a run belongs to. For a live run the repo is inferable from `worktree_path`, but once the worktree is torn down that field is null and nothing else identifies the repo. A stalled run reports worktree_path = null, source_branch = "main", status = "pending". Since `source_branch` is `main` for nearly every run, it disambiguates nothing.
+`taskfleet run show <id> --output json` exposes no field naming the repository a run belongs to. For a live run the repo is inferable from `worktree_path`, but once the worktree is torn down that field is null and nothing else identifies the repo. A stalled run reports worktree_path = null, source_branch = "main", status = "pending". Since `source_branch` is `main` for nearly every run, it disambiguates nothing.
 
 Full top-level key set from `run show --output json`: attention_required, awaiting_input, counts, created_at, harness, kind, landed, landed_method, lifecycle, manifest, node_count, open_discussion_count, report, run_id, source_branch, stalled, status, stillborn, supervisor, title, worktree_path.
 
@@ -43,4 +43,4 @@ Blocks a documented wrap-up safety check from being answered programmatically. N
 
 ## Related, do not merge with this
 
-The six perpetually-pending stalled runs are separately tracked as intake-bug-orchestratectl-169460ea27e7 (stale pending runs clutter run list and look like live workers). This request is only about repo identity being unavailable, which would still matter if that cleanup shipped.
+The six perpetually-pending stalled runs are separately tracked as intake-bug-taskfleet-169460ea27e7 (stale pending runs clutter run list and look like live workers). This request is only about repo identity being unavailable, which would still matter if that cleanup shipped.

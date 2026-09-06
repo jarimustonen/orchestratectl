@@ -25,15 +25,15 @@ the two successful peers have the same omitted optional source fields.
 interruptible materialization step. A caller-side timeout or hard cancellation
 therefore left a public `pending` manifest with no node. The command never made
 its own success claim, but downstream orchestration treated the durable
-skeleton as an accepted run. This is an atomicity defect in orchestratectl's
+skeleton as an accepted run. This is an atomicity defect in taskfleet's
 create protocol, independent of the still-unidentified saturation trigger.
 
 ## Fix
 
 Creation now writes the prompt, event log, manifest, and `node.created`
-projection under `~/.orchestratectl/.creating/runs/<run-id>/`. Only after
+projection under `~/.taskfleet/.creating/runs/<run-id>/`. Only after
 `create.sh` has returned a live PID and `node.created` is durable does it
-atomically rename that directory into `~/.orchestratectl/runs/<run-id>/`.
+atomically rename that directory into `~/.taskfleet/runs/<run-id>/`.
 The parent `child.spawned` event, idempotency reservation commit point, and
 supervisor launch all follow publication. Thus a successful create names an
 existing worker node, and an interrupted materialization cannot expose a
@@ -48,7 +48,7 @@ its existing worktree source contract.
 
 ## Regression coverage
 
-`crates/octl-cli/tests/creation_reliability.rs::interrupted_create_never_publishes_a_zero_node_run`
+`crates/taskfleet-cli/tests/creation_reliability.rs::interrupted_create_never_publishes_a_zero_node_run`
 deterministically blocks a fake `create.sh`, kills `run create` as a timed-out
 client would, and proves that `runs/` remains empty while the unfinished state
 is private under `.creating/`. It also proves that a keyed retry fails with

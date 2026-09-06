@@ -30,9 +30,9 @@ inventory() {
     echo '# default tmux'
     tmux list-windows -a -F '#{socket_path}\t#{session_name}\t#{window_id}\t#{pane_current_path}' 2>/dev/null || true
     echo '# supervisors'
-    ps -axo command= | grep -E '[/](taskfleet|orchestratectl) supervise ' | sort || true
+    ps -axo command= | grep -E '[/]taskfleet supervise ' | sort || true
     echo '# external taskfleet homes'
-    for home in "${TASKFLEET_HOME:-$HOME/.taskfleet}" "$HOME/.orchestratectl"; do
+    for home in "${TASKFLEET_HOME:-$HOME/.taskfleet}"; do
       [ "$home" = "$root/home" ] && continue
       if [ -d "$home/runs" ]; then
         find "$home/runs" -mindepth 1 -maxdepth 1 -type d -print | sort

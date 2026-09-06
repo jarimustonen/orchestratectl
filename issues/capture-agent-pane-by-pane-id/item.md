@@ -26,7 +26,7 @@ own shell output (mild privacy concern).
 ## Fix direction
 Record a stable `pane_id` (`%NN`, `#{pane_id}`) at agent spawn and target it
 directly in `pipe-pane -t %NN`. This touches:
-- `octl-core` `TmuxIdentity` schema (add `pane_id`)
+- `taskfleet-core` `TmuxIdentity` schema (add `pane_id`)
 - `create.sh` (emit `#{pane_id}`)
 - `run/spawn.rs` parsing of the create handoff
 - `supervise/capture.rs` to prefer `pane_id` over `window_id`

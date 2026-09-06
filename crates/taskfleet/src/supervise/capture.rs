@@ -171,7 +171,7 @@ fn capture_tick_with(
     });
     if let Err(e) = scan.map_err(from_core) {
         warn!(
-            target: "orchestratectl::supervise",
+            target: "taskfleet::supervise",
             error = %e.message,
             "agent-log capture scan failed (continuing)"
         );
@@ -204,7 +204,7 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
     match run_pipe_pane(cmd) {
         Ok(()) => {
             info!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = node_id,
                 window = %identity.window_id,
                 pane = %identity.capture_target(),
@@ -215,7 +215,7 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
         }
         Err(detail) => {
             warn!(
-                target: "orchestratectl::supervise",
+                target: "taskfleet::supervise",
                 node = node_id,
                 window = %identity.window_id,
                 pane = %identity.capture_target(),
@@ -282,7 +282,7 @@ fn run_pipe_pane(cmd: Command) -> Result<(), String> {
 }
 
 /// Wrap `s` in single quotes for a POSIX shell, escaping embedded single quotes
-/// via the `'\''` idiom. Run dirs live under `~/.orchestratectl/runs/<id>` and
+/// via the `'\''` idiom. Run dirs live under `~/.taskfleet/runs/<id>` and
 /// never contain quotes in practice, but the tee command is handed to `sh -c`
 /// by tmux, so we quote defensively.
 fn shell_single_quote(s: &str) -> String {
@@ -310,7 +310,7 @@ mod tests {
     fn id(socket: Option<&str>, window_id: &str) -> TmuxIdentity {
         TmuxIdentity {
             socket: socket.map(str::to_string),
-            session: "octl".to_string(),
+            session: "taskfleet".to_string(),
             window_id: window_id.to_string(),
             pane_id: None,
         }
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn command_includes_socket_window_and_append_target() {
         let identity = id(Some("/private/tmp/tmux-501/default"), "@42");
-        let log = PathBuf::from("/home/x/.orchestratectl/runs/abc/agent.log");
+        let log = PathBuf::from("/home/x/.taskfleet/runs/abc/agent.log");
         let cmd = pipe_pane_command("tmux", &identity, &log);
         assert_eq!(cmd.get_program().to_string_lossy(), "tmux");
         assert_eq!(
@@ -347,7 +347,7 @@ mod tests {
                 "@42".to_string(),
                 format!(
                     "head -c {CAPTURE_MAX_BYTES} >> \
-                     '/home/x/.orchestratectl/runs/abc/agent.log'"
+                     '/home/x/.taskfleet/runs/abc/agent.log'"
                 ),
             ]
         );

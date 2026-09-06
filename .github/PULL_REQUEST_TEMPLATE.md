@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to orchestratectl! Please read CONTRIBUTING.md first.
+Thanks for contributing to taskfleet! Please read CONTRIBUTING.md first.
 Keep PRs focused — one concern per commit, one issue per PR.
 -->
 
@@ -27,7 +27,7 @@ All must pass locally before review (CI enforces them):
       JSONL logs, strict input validation, informative error envelopes, no
       interactive prompts.
 - [ ] CLI-surface or `SKILL.template.md` changes: validated with repository-local
-      artifacts and the documented insta snapshot loop; no installed orchestratectl
+      artifacts and the documented insta snapshot loop; no installed taskfleet
       binary or bundled-skill set was changed for this work.
 - [ ] Commits are focused (one concern each).
 

@@ -22,7 +22,7 @@ decision fork** (merge the modest reviewed slice + spin off the real work, vs. f
 big API change in now). Instead of resolving it, the agent **stopped at its interactive
 prompt and waited ~6 hours** for a human answer that no one was watching for.
 
-- `orchestratectl run wait` reported the run `pending` / `landed: false` the whole time —
+- `taskfleet run wait` reported the run `pending` / `landed: false` the whole time —
   indistinguishable at a glance from a hang or a death.
 - The branch had committed, reviewed work; `manifest.updated_at` was frozen near creation;
   the agent process + tmux pane were alive at a `❯` prompt.

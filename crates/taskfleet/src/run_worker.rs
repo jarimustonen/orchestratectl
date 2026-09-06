@@ -108,9 +108,9 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         }
     }
 
-    let await_publication = std::env::var_os("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION")
+    let await_publication = std::env::var_os("TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION")
         .is_some_and(|value| value == "1");
-    let root = match std::env::var_os("OCTL_INTERNAL_WORKER_STATE_ROOT") {
+    let root = match std::env::var_os("TASKFLEET_INTERNAL_WORKER_STATE_ROOT") {
         Some(root) if await_publication => std::path::PathBuf::from(root),
         _ => crate::home::root_dir()?,
     };
@@ -143,10 +143,9 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         });
     }
 
-    cmd.env_remove("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION")
-        .env_remove("OCTL_INTERNAL_WORKER_STATE_ROOT")
-        .env_remove("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS")
-        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV);
+    cmd.env_remove("TASKFLEET_INTERNAL_WORKER_AWAIT_PUBLICATION")
+        .env_remove("TASKFLEET_INTERNAL_WORKER_STATE_ROOT")
+        .env_remove("TASKFLEET_TEST_WORKER_PUBLICATION_WAIT_MS");
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -263,7 +262,7 @@ fn await_published_node(
 ) -> Result<(), CliError> {
     const DEFAULT_WAIT: Duration = Duration::from_secs(120);
     #[cfg(debug_assertions)]
-    let wait = std::env::var("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS")
+    let wait = std::env::var("TASKFLEET_TEST_WORKER_PUBLICATION_WAIT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map_or(DEFAULT_WAIT, Duration::from_millis);
@@ -332,7 +331,7 @@ fn record_worker_exit(paths: &RunPaths, node_id: &NodeId, args: &RunWorkerArgs, 
             args.run_id, args.node_id
         );
         tracing::warn!(
-            target: "orchestratectl::run_worker",
+            target: "taskfleet::run_worker",
             run_id = %args.run_id,
             node_id = %args.node_id,
             error = %msg,

@@ -10,7 +10,7 @@ closed: 2026-07-26
 
 # Capture autonomous agent pane output to durable `<run-dir>/agent.log`
 
-_Source: crates/octl-cli/src/supervise_
+_Source: crates/taskfleet-cli/src/supervise_
 
 Companion to [[worker-process-hang]]. An autonomous worker's stdout/stderr goes
 ONLY to its tmux pane, which the supervisor kills on cleanup — so a genuine
@@ -23,7 +23,7 @@ the ~13-min deterministic `agent-died` on `pipeline-tiered-triage` (see
 The supervisor now tees each worker node's tmux pane to `<run-dir>/agent.log`
 via `tmux pipe-pane`, armed once the node's `tmux_identity` is first observed.
 
-- New module `crates/octl-cli/src/supervise/capture.rs`; `capture::capture_tick`
+- New module `crates/taskfleet-cli/src/supervise/capture.rs`; `capture::capture_tick`
   is called each supervisor tick (BEFORE the watchdog, so startup output inside
   the spawn-grace window is captured too).
 - New `RunPaths::agent_log()` → `<run-dir>/agent.log`. The file lives in the RUN

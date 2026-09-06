@@ -50,8 +50,8 @@ After this fix, also confirm:
 - The auto-cleanup DOES still fire on legitimate `agent-died` (when the agent really crashes after a real grace period).
 
 Related:
-- `crates/octl-cli/src/supervise/mod.rs` around line 1162 — the `!terminal` guard on watchdog-synthesized reports
-- `crates/octl-cli/src/run/spawn.rs::verify_agent_pid` — the pre-fork PID check; may need to be re-run at supervisor start
+- `crates/taskfleet-cli/src/supervise/mod.rs` around line 1162 — the `!terminal` guard on watchdog-synthesized reports
+- `crates/taskfleet-cli/src/run/spawn.rs::verify_agent_pid` — the pre-fork PID check; may need to be re-run at supervisor start
 - Probably worth coordinating with the throwaway-repo harness issue (`spinoff-throwaway-harness`) because that harness is the cleanest way to test "many fast spawns + watchdog doesn't false-alarm"
 
 Severity: HIGH. Without this fix, every spinoff that takes a normal amount of time (minutes) risks having its work destroyed by auto-cleanup mid-flight. Workaround for now: trust `git log main` (work IS committed) and ignore `run show` status.
