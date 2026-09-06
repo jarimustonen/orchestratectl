@@ -6,8 +6,10 @@
 //! never touched. tmux/external-process probes are stubbed via
 //! `TMUX_BIN` redirection or by skipping the probe entirely.
 
+use std::io::BufRead as _;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -118,6 +120,97 @@ fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
         seen >= want
     });
     seen
+}
+
+/// Direct child supervisor whose Drop guard always reaps the exact process this
+/// test spawned. This is deliberately not pid-file based: the run directory is
+/// removed by these tests, so durable ownership metadata may no longer exist.
+struct OwnedSupervisor {
+    child: Child,
+}
+
+impl OwnedSupervisor {
+    fn wait_for_exit(&mut self) -> ExitStatus {
+        let exited = poll_until(POLL_DEADLINE, || {
+            self.child
+                .try_wait()
+                .expect("poll supervisor exit")
+                .is_some()
+        });
+        assert!(
+            exited,
+            "supervisor pid {} did not self-terminate after run removal",
+            self.child.id()
+        );
+        self.child.wait().expect("reap self-terminated supervisor")
+    }
+}
+
+impl Drop for OwnedSupervisor {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// Spawn a supervisor and synchronize on its production readiness-pipe signal.
+/// A pid-file existence poll is insufficient: the supervisor claims that file
+/// before appending `supervisor.started`. Removing the manifest in that boot
+/// window races the append's projection rebuild, which can restore the manifest
+/// and make a test wait forever for an orphan condition that no longer exists.
+fn spawn_ready_supervisor(home: &TempDir, run_id: &str) -> OwnedSupervisor {
+    let mut fds = [0; 2];
+    // SAFETY: `pipe` initializes exactly two owned descriptors on success.
+    assert_eq!(
+        unsafe { libc::pipe(fds.as_mut_ptr()) },
+        0,
+        "create readiness pipe"
+    );
+    // SAFETY: both descriptors were freshly returned by the successful pipe.
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    let child = bin(home)
+        .env("TASKFLEET_READINESS_FD", write_fd.as_raw_fd().to_string())
+        // Hold the process after pid claim to make the old pid-file race a
+        // deterministic regression: only the readiness frame may release the
+        // test to remove the run state.
+        .env("TASKFLEET_TEST_SLOW_BOOT", "250")
+        .args(["supervise", run_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn supervisor");
+    let supervisor = OwnedSupervisor { child };
+    // Only the child may retain the write end; closing ours gives EOF if it
+    // dies before reporting readiness.
+    drop(write_fd);
+
+    let ready = poll_until(POLL_DEADLINE, || {
+        let mut pfd = libc::pollfd {
+            fd: read_fd.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP,
+            revents: 0,
+        };
+        // SAFETY: `pfd` points to one valid pollfd for this zero-timeout probe.
+        (unsafe { libc::poll(&raw mut pfd, 1, 0) }) > 0
+    });
+    assert!(ready, "supervisor did not report readiness");
+
+    let mut line = String::new();
+    let mut reader = std::io::BufReader::new(std::fs::File::from(read_fd));
+    reader
+        .read_line(&mut line)
+        .expect("read supervisor readiness frame");
+    assert_eq!(
+        line,
+        format!("R{}\n", supervisor.child.id()),
+        "supervisor readiness must prove exact child ownership"
+    );
+
+    supervisor
 }
 
 fn create_run(home: &TempDir, kind: &str, title: &str) -> String {
@@ -1662,49 +1755,18 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
 /// is removed — the TempDir-teardown case — there is no log to write to,
 /// and the event is correctly skipped; only the clean exit is observable.)
 #[test]
-#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn self_terminate_when_run_dir_vanishes() {
-    use std::time::Instant;
-
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "self-term");
     let rdir = run_dir(&home, &run_id);
-
-    // Spawn a real, long-lived supervisor (no --once). It is a direct
-    // child here, so we can wait on it and a kill fallback reaps it if
-    // the assertion is about to fail.
-    let mut child = bin(&home)
-        .args(["supervise", &run_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn supervisor");
-
-    // Wait for boot (the PID file appears once it has entered the loop).
+    let mut supervisor = spawn_ready_supervisor(&home, &run_id);
     let pid_file = rdir.join("supervisor.pid");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !pid_file.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(pid_file.exists(), "supervisor did not start in time");
 
-    // Yank the manifest out from under it (leaving events.jsonl intact).
+    // Yank the manifest out from under the fully booted supervisor (leaving
+    // events.jsonl intact).
     std::fs::remove_file(rdir.join("manifest.json")).expect("remove manifest");
 
-    // It must self-terminate within ~5s (3 missing-manifest ticks + boot
-    // and scheduling slack). Budget 10s to stay robust under CI load.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if let Some(s) = child.try_wait().expect("try_wait") {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("supervisor did not self-terminate within 10s of run dir removal");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let status = supervisor.wait_for_exit();
     assert_eq!(
         status.code(),
         Some(0),
@@ -1734,7 +1796,6 @@ fn self_terminate_when_run_dir_vanishes() {
 /// `append_and_apply_event` write through `create_dir_all`, so a sloppy
 /// implementation leaves a ghost dir behind after an operator's `rm -rf`.
 #[test]
-#[file_serial(key, path => "/tmp/taskfleet-test-supervise.lock")]
 fn self_terminate_when_whole_run_dir_removed() {
     use std::time::Instant;
 
@@ -1742,19 +1803,7 @@ fn self_terminate_when_whole_run_dir_removed() {
     let run_id = create_run(&home, "spinoff", "self-term-dir");
     let rdir = run_dir(&home, &run_id);
 
-    let mut child = bin(&home)
-        .args(["supervise", &run_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn supervisor");
-
-    let pid_file = rdir.join("supervisor.pid");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !pid_file.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(pid_file.exists(), "supervisor did not start in time");
+    let mut supervisor = spawn_ready_supervisor(&home, &run_id);
 
     // Remove the whole run dir out from under the supervisor. This races
     // the supervisor's per-tick `state.json` write, which can recreate a
@@ -1776,18 +1825,7 @@ fn self_terminate_when_whole_run_dir_removed() {
         }
     }
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if let Some(s) = child.try_wait().expect("try_wait") {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("supervisor did not self-terminate within 10s of run dir removal");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let status = supervisor.wait_for_exit();
     assert_eq!(
         status.code(),
         Some(0),
