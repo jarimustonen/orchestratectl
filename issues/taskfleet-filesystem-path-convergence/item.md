@@ -2,13 +2,17 @@
 created: 2026-09-06
 updated: 2026-09-06
 type: task
-status: open
+status: done
 priority: high
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 150
 collision: [issues/rename-taskfleet/plan.md]
 blocked_by: ['@taskfleet-zero-legacy-identity']
+closed: 2026-09-06
+commits:
+- hash: ff29421
+  summary: record filesystem convergence smoke
 ---
 
 # Converge canonical Taskfleet filesystem paths
@@ -41,3 +45,9 @@ This is a final convergence transaction. It depends on the zero-legacy Taskfleet
 - [x] Unreachable hosts are recorded as unverified rather than assumed converged.
 
 Brunhild was unreachable during convergence and remains explicitly unverified; the checked reachable-host criteria cover Gertrud, Hauis, and Haapa only. The smoke criterion is completed by the successful self-merge of run `01m1vxs01fapy4yc8dtz7e1b7a`.
+
+## Resolution
+
+### 2026-09-06T18:01:03Z · @issuectl
+
+Canonical filesystem convergence completed on all reachable hosts; Brunhild remains explicitly unverified until reachable.
