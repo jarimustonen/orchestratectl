@@ -2,12 +2,19 @@
 created: 2026-09-06
 updated: 2026-09-06
 type: bug
-status: open
+status: fixed
 priority: high
 related: ['@taskfleet-release-0-6-0']
 lane: taskfleet-rename
 lane_seq: 111
 collision: [scripts/verify-release-github-policy.sh, .github/workflows/release.yml, .github/workflows/publish-crates.yml]
+closed: 2026-09-06
+closed_by: pi
+commits:
+- hash: 8ad34689a4a23e3d354b37aafcf5099c0b6c448c
+  summary: fix release gate credentials and diagnostics
+- hash: a8ab5d0e3475f83dbf116cbe71300316308b195f
+  summary: pin jq 1.6 fixture and pass exact candidate CI
 ---
 
 # Release gate fails on CI jq and workflow token
@@ -41,11 +48,29 @@ The public v0.6.0 tag was authorized and pushed by the pinned release wrapper at
 5. Validate through an exact candidate PR and merged-main CI without tagging or publishing.
 6. Document v0.6.0 as an unpublished burned tag and prepare a new patch release (v0.6.1) only through a newly sealed wrapper plan.
 
-## Definition of Done
+## Acceptance Criteria
 
-- [ ] Both authorization paths pass with the exact runner jq/tool/token topology used by tag workflows.
-- [ ] Missing, malformed, inaccessible, or mismatched rulesets still fail closed.
-- [ ] PRs cannot access release credentials or execute publication.
-- [ ] Full green gate and exact-SHA CI evidence are recorded.
-- [ ] No v0.6.0 artifact/package/formula was published and no tag was moved.
-- [ ] The fix is ready for a fresh v0.6.1 wrapper transaction.
+- [x] Both authorization paths pass with the exact runner jq/tool/token topology used by tag workflows.
+- [x] Missing, malformed, inaccessible, or mismatched rulesets still fail closed.
+- [x] PRs cannot access release credentials or execute publication.
+- [x] Full green gate and exact-SHA CI evidence are recorded.
+- [x] No v0.6.0 artifact/package/formula was published and no tag was moved.
+- [x] The fix is ready for a fresh v0.6.1 wrapper transaction.
+
+## Validation
+
+- Exact candidate: `a8ab5d0e3475f83dbf116cbe71300316308b195f`.
+- Same-repository PR: [#3](https://github.com/jarimustonen/taskfleet/pull/3).
+- Exact-SHA CI: [34018842931](https://github.com/jarimustonen/taskfleet/actions/runs/34018842931), green across hosted Linux/macOS, self-hosted ARM64 macOS, jq 1.6 release topology, MSRV, clippy, docs, deny, snapshots, and tests.
+- The jq fixture passed against checksum-pinned `jq-1.6` (`af986793…a124c44`) and local jq 1.8.2. API failure, malformed shape, privilege-redacted shape, and policy mismatch fixtures each produced a distinct non-secret diagnostic and failed closed.
+- Homebase's SOPS-managed release credential read both live rulesets with HTTP 200 and exposed `bypass_actors`; `credential-ruleset-read.json` contains only sanitized metadata.
+- cargo-dist 0.28.2 `generate --check`, exact plan/topology validation, the pinned Homebrew 6.0.21 disposable distribution drill, actionlint structure, all release authorization/wrapper/publish fixtures, and the exact Shipshape 0.10.1 migration protocol passed.
+- Full local gate passed: fmt, clippy warnings-as-errors, release nextest, doctests, and rustdoc warnings-as-errors. The all-workspace release nextest suite also passed with the stripped declared PATH.
+- Postflight: all three crates remain without v0.6.0; no v0.6.0 GitHub Release exists; canonical and old tap heads remain `db12bb163e47617f0b941a35d3896b6ba0548892` and `85ce830378f38cf17283efddd966d5754354e403` respectively.
+- No tag, authorization ref, ruleset, tap, registry, installation, or release journal was mutated by this fix.
+
+## Resolution
+
+### 2026-09-06T07:26:15Z · @pi
+
+jq 1.6 portability, administration-readable tag-gate credentials, fail-closed diagnostics, exact cargo-dist generation, and candidate CI 34018842931 are verified; v0.6.0 remains unpublished and immutable.
