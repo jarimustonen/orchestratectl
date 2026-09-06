@@ -9,16 +9,50 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+### Changed
+
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.6.0] - 2026-09-06
+
+### Added
+
 - **Bundled skill installation now conforms to project-canon §15 (`overly-knowing-family`).** Claude, pi, and Codex are explicit first-class targets; the default and `--agent all` install all three; `skill list --json` declares complete capability/layout metadata; `--target` and `--dry-run` provide isolated, inspectable installs; and Codex prompts embed any required resource content while Claude/pi retain native Agent Skill trees.
 - **Worker selection can resolve user-owned executable profiles (`worker-profile-config-resolver`).** `run create --profile` now selects bounded capability/residency profiles from user config, enforces autonomous pi+`worker-v1` eligibility with deterministic non-weakening fallback, and records the requested and selected choice across dry-run, create, and `run show`; repository config remains selection-only and legacy no-profile runs stay readable.
 - **Recorded worker profiles now drive launch and telemetry policy (`worker-telemetry-harness-enforcement`).** Create and retry execute the selected candidate's exact recorded argv, export exact adapter identity only for configured pi telemetry, and expose recorded `requirement`/`support` in `run show` without inferring either from samples.
+
+- Rename orchestratectl to Taskfleet (`rename-taskfleet`).
 
 ### Changed
 
 - **Release publication now follows an exact five-leg Taskfleet saga (`taskfleet-release-machinery`).** The pinned Shipshape plan carries three ordered crates.io targets plus independent GitHub Release and Homebrew targets; CI publishes `taskfleet-core` → `taskfleet` → the bounded `orchestratectl` wrapper only from an activated exact tag, reconciles checksum/owners/full dependencies/version metadata/source commit without trusting Cargo error text, and preserves resumable held-tag and partial-release receipts.
 - **Bundled workflows and repository contracts now use the canonical Taskfleet identity (`taskfleet-skills-docs-contracts`).** New prompts, source references, examples and telemetry endpoint commands use `taskfleet`; Taskfleet-owned skill names migrate by recorded hashes while edited/unmanaged copies are preserved, and stable `OCTL_*` plus the telemetry contract id remain unchanged.
 - **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
-<!-- oss-changelog:unreleased-end -->
+
+- Add the Taskfleet dual-name resolver and legacy-home adoption (`taskfleet-dual-name-resolver`).
+- Conform skill installer to canon section 15 (`overly-knowing-family`).
+- Create canonical Taskfleet packages and the bounded old CLI wrapper (`taskfleet-package-wrapper`).
+- Cut and verify Taskfleet 0.6.0 (`taskfleet-release-0-6-0`).
+- Define external pi telemetry adapter contract (`worker-telemetry-pi-adapter`).
+- Extract the shared Taskfleet CLI dispatcher (`taskfleet-shared-dispatcher`).
+- Freeze Taskfleet rename identity inventory (`taskfleet-rename-inventory`).
+- Implement configurable agent profile resolver (`worker-profile-config-resolver`).
+- Implement worker telemetry control and bounded sample (`worker-telemetry-core-control`).
+- Integrate selected agent launch and telemetry visibility (`worker-telemetry-harness-enforcement`).
+- Prepare Taskfleet cargo-dist and Homebrew topology (`taskfleet-distribution-topology`).
+- Produce immutable integrated Taskfleet pre-cut evidence (`taskfleet-integrated-validation`).
+- Rebuild Taskfleet registry and Shipshape release machinery (`taskfleet-release-machinery`).
+- Remove stint local source installation (`remove-stint-local-install`).
+- Rename Taskfleet source repository (`taskfleet-source-repository-rename`).
+- Reshape worker control plane implementation DAG (`reshape-worker-control-plane-dag`).
+- Review worker telemetry and agent profiles as one control plane (`worker-control-plane-review`).
+- Validate and roll out worker telemetry end to end (`worker-telemetry-e2e-rollout`).
+
+### Fixed
+
+- Restore bare-CI portability before Taskfleet R8 (`pre-r8-ci-portability`).
+- publish-crates fixture chmods symlinked system tools on Linux CI (`publish-crates-fixture-symlink-chmod`).
 
 ## [0.5.1] - 2026-08-23
 

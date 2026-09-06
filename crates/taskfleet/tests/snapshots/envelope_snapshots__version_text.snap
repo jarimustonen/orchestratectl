@@ -1,9 +1,8 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 234
 expression: value
 ---
-taskfleet 0.5.1
+taskfleet 0.6.0
 commit:                  [COMMIT]
 envelope schema:         1
 supported envelopes:     1

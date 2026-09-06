@@ -649,7 +649,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "orchestratectl"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde_json",
  "taskfleet",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "taskfleet"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "taskfleet-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "fs4",
