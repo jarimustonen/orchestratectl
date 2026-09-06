@@ -3,12 +3,16 @@ created: 2026-09-04
 updated: 2026-09-06
 type: task
 reporter: jari
-status: open
+status: done
 priority: high
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 110
 collision: [repository-identity]
+closed: 2026-09-06
+commits:
+- hash: 94bf55b
+  summary: record final v0.6.0 burn and v0.6.1 release receipts
 ---
 
 # Cut and verify Taskfleet 0.6.0
@@ -52,3 +56,9 @@ Complete ADR 0002 R10 truthfully. The first canonical coordinate, v0.6.0, was wr
 ## Recovery and next authorization
 
 Published identities are never rolled back or reused. v0.6.0 remains a permanent burned tag receipt; v0.6.1 is the first fully published canonical Taskfleet release. R11 may now activate and verify only the prepared old-tap Homebrew migration. Dependent-repository discovery or migration remains outside this authorization and starts only after R11's own gate.
+
+## Resolution
+
+### 2026-09-06T09:01:59Z · @issuectl
+
+R10 closed after checksummed public reconciliation and a successful disposable canonical Homebrew install/uninstall. This authorizes ADR 0002 R11 only.
