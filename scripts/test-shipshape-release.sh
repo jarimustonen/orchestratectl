@@ -302,22 +302,10 @@ set -e
   exit 1
 }
 
-# Credential-free plans remain permitted, but R8-R10 still own the integrated,
-# repository-rename and cut gates. A cut must fail before Shipshape, GitHub, Git
-# refs, or release state can be touched.
-reset_logs
-set +e
-env -i HOME="$tmp/home" PATH="$tmp/bin" GIT_STUB_LOG="$tmp/git.log" \
-  GIT_STUB_ROOT="$repo_root" GIT_STUB_ORIGIN=unused \
-  SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" \
-  "$repo_root/scripts/shipshape-release.sh" cut "$(printf '%064d' 0)" \
-  >"$tmp/stdout" 2>"$tmp/stderr"
-status=$?
-set -e
-[[ "$status" -eq 2 ]] || { echo "Taskfleet R8-R10 cut was not blocked (status=$status)" >&2; exit 1; }
-grep -F 'release cut activation is blocked-r8-r9-r10' "$tmp/stderr" >/dev/null
-test ! -s "$tmp/shipshape.log" || { echo "blocked cut reached Shipshape" >&2; exit 1; }
-test ! -s "$tmp/gh.log" || { echo "blocked cut reached GitHub" >&2; exit 1; }
+# R10 activation is now structurally ready. The exact 0.10.1 protocol fixture
+# owns the cut-path proof; this preflight suite must no longer assert the retired
+# blocked ledger state.
+"$repo_root/scripts/verify-release-activation.sh" >/dev/null
 
 "$repo_root/scripts/test-shipshape-release-held-tag.sh"
 echo "release wrapper tests passed"
