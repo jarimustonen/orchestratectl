@@ -28,7 +28,7 @@ check_workflow "$release"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/taskfleet-release-auth.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/repo/scripts" "$tmp/repo/release" "$tmp/bin"
-for tool in bash jq git awk cargo; do
+for tool in bash jq git awk; do
   if [[ "$tool" == git && -n "${REAL_GIT:-}" ]]; then
     tool_path="$REAL_GIT"
   else
@@ -36,6 +36,14 @@ for tool in bash jq git awk cargo; do
   fi
   ln -s "$tool_path" "$tmp/bin/$tool"
 done
+# The production verifier requires cargo to exist but deliberately does not
+# execute it. A fixture stub avoids depending on a host rustup proxy after
+# env -i removes HOME (as on GitHub-hosted runners).
+cat >"$tmp/bin/cargo" <<'STUB'
+#!/bin/sh
+exit 99
+STUB
+chmod +x "$tmp/bin/cargo"
 cp "$repo_root/scripts/verify-release-tag-authorization.sh" "$tmp/repo/scripts/"
 cat >"$tmp/repo/scripts/verify-release-activation.sh" <<'STUB'
 #!/bin/sh
