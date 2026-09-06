@@ -11,18 +11,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.7.0] - 2026-09-06
+
+### Changed
+
 - Make Taskfleet the sole maintained product identity across packages, commands,
   state/config paths, environment and protocol fields, skills, documentation,
   repository metadata, and release/distribution contracts.
+
+- Keep only the Taskfleet identity (`taskfleet-zero-legacy-identity`).
 
 ### Removed
 
 - Remove the transitional package, executable, dispatch, resolver, state-adoption,
   warning, installer, and skill-rename machinery. Existing installations and state
   are intentionally not discovered or changed.
-
-### Fixed
-<!-- oss-changelog:unreleased-end -->
 
 ## [0.6.1] - 2026-09-06
 
