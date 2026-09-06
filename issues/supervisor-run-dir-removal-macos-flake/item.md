@@ -2,12 +2,16 @@
 created: 2026-09-06
 updated: 2026-09-06
 type: bug
-status: open
+status: fixed
 priority: high
 related: ['@taskfleet-zero-legacy-identity']
 lane: taskfleet-rename
 lane_seq: 145
 collision: [crates/taskfleet/tests/supervise_gates.rs]
+closed: 2026-09-06
+commits:
+- hash: 2def0c4
+  summary: synchronize supervisor removal tests on readiness
 ---
 
 # Supervisor run-directory removal flakes on hosted macOS
@@ -28,3 +32,9 @@ Maintain the zero-legacy identity invariant: `./scripts/check-canonical-identity
 - [ ] No test process/root/tmux residue remains.
 - [ ] Full repository green gate passes.
 - [ ] Exact-main hosted macOS CI is green.
+
+## Resolution
+
+### 2026-09-06T15:22:34Z · @issuectl
+
+Fixed the hosted-macOS timing race by waiting for the production readiness-pipe frame, verifying it names the exact direct child, and guarding that child with unconditional kill/reap cleanup. The former PID-file poll could remove manifest.json after PID claim but before supervisor.started projection application restored it. The sibling whole-directory test masked the same race with its removal retry. The tests now run concurrently; 12 concurrent repeated pairs plus 4 slow-boot contention pairs passed, followed by the exact full green gate and canonical identity check.
