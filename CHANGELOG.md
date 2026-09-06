@@ -12,9 +12,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+<!-- oss-changelog:unreleased-end -->
+
+## [0.6.1] - 2026-09-06
+
+### Fixed
 
 - Make release-policy verification compatible with hosted jq 1.6 and supply its administration-readable credential only to tag-push authorization gates.
-<!-- oss-changelog:unreleased-end -->
+
+- Release gate fails on CI jq and workflow token (`taskfleet-release-gate-ci-portability`).
 
 ## [0.6.0] - 2026-09-06
 

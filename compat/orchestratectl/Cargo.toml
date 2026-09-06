@@ -25,7 +25,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-taskfleet = { path = "../../crates/taskfleet", version = "=0.6.0" }
+taskfleet = { path = "../../crates/taskfleet", version = "=0.6.1" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
