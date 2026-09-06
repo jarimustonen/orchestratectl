@@ -12,6 +12,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 ### Fixed
+
+- Make release-policy verification compatible with hosted jq 1.6 and supply its administration-readable credential only to tag-push authorization gates.
 <!-- oss-changelog:unreleased-end -->
 
 ## [0.6.0] - 2026-09-06
