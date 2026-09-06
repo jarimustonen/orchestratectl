@@ -1,58 +1,55 @@
-# R10 Phase A/B validation
+# R10 final validation
 
-## Scope and boundary
+## Scope and immutable pre-cut evidence
 
-This worker completed only Phase A and the pre-merge candidate portion of Phase B. It did not create or push a tag, publish a crate, create a GitHub Release, activate a formula, install Taskfleet globally, invoke `skill install`, migrate real state, modify either tap, or execute Phase C. The final merged-main push CI and release transaction remain conductor-owned.
+Phase A hardened the two independent tag workflows and activated the release ledgers. Phase B passed its full post-R9 gate at candidate `23f7fcf6d9de969300dce560538ce1f3a11f2a2a` (tree `fbabcec6898d9529758eb79f5f42182bd866b9e4`, CI `34014432088`). The original checksummed evidence remains in `evidence/`; `evidence/final/` is a separate post-release bundle and does not rewrite those pre-cut receipts.
 
-## Exact candidate
+The topology remained the approved five-target saga: `taskfleet-core` → `taskfleet` → bounded `orchestratectl` on crates.io, plus independent GitHub Release and Homebrew targets for Taskfleet. cargo-dist is tag-only, every publishing leg requires the protected version-specific authorization ref, and the wrapper records that ref only after exact-main CI.
 
-- Commit: `23f7fcf6d9de969300dce560538ce1f3a11f2a2a`
-- Tree: `fbabcec6898d9529758eb79f5f42182bd866b9e4`
-- Canonical source: `jarimustonen/taskfleet` (`R_kgDOS3Iezw`)
-- Disposable same-repository PR: [#2](https://github.com/jarimustonen/taskfleet/pull/2), closed unmerged and branch deleted
-- CI run: [`34014432088`](https://github.com/jarimustonen/taskfleet/actions/runs/34014432088), green on the exact head SHA
+## v0.6.0: correctly authorized, then burned
 
-## Phase A result
+The pinned wrapper advanced release commit `57f6dfb83401694399b363de5d3aa88e4541a22c` through exact-main CI `34016341659`, then created `refs/heads/taskfleet-release-authorizations/v0.6.0` at that same commit before publishing the annotated `v0.6.0` tag.
 
-The generated cargo-dist 0.28.2 workflow is tag-only (`pr-run-mode = "skip"`), contains no PR trigger or inherited reusable-workflow secrets, and invokes the same fail-closed authorization verifier in every local build. The crates workflow invokes that verifier independently. The held-tag wrapper creates a protected, version-scoped authorization ref only after exact-main CI and before resuming Shipshape's held tag.
+Both tag workflows failed closed before publication:
 
-GitHub rulesets `22234415` (release tags) and `22234417` (authorization refs) are active, target the intended ref patterns, contain no bypass actors, and block creation/update/deletion outside repository-administrator authority. The canonical Homebrew credential was synchronized through Homebase; only sanitized secret metadata and a reversible exact-head canary receipt are recorded here. Both tap heads remained unchanged.
+- crates workflow `34016740702`: authorization/topology job `101441707888` failed; all three publication jobs were skipped;
+- cargo-dist workflow `34016740704`: local build jobs `101441745244`, `101441745248`, and `101441745351` failed their authorization checks; host, release, and formula jobs were skipped.
 
-Activation ledgers now agree on `ready`, `active-proven-r10`, tag-push/PR-skip operation, the protected authorization ref, the canonical source, the canonical tap, the exact three-crate order, and Taskfleet-only binary distribution.
+The failures were jq 1.6 reserved-variable incompatibility and unavailable privileged ruleset fields under the workflow token. No v0.6.0 crate, GitHub Release, asset, or formula exists. Shipshape journal `01M1TNW3SMN0XA347D1MG4518R` is terminally `abandoned` at sequence/applied sequence 38. The tag and authorization ref remain immutable and are not release-success claims.
 
-## Phase B result
+## v0.6.1: successful fix-forward
 
-The candidate passed:
+The gate fixes landed before the patch cut. The source fixes needed for truthful Shipshape reconciliation were also verified in the Shipshape source repository (`jarimustonen/ossctl`): tracked-helper observation commits `dc1bdf8`/`bf29567` with exact-main CI `34021860186`, and GNU Homebrew verification commits `a7b2ae1`/`88f2b98` with exact-main CI `34022689350`.
 
-- the full Rust green gate without fail-fast, including clippy, all release tests, doctests, and rustdoc warnings-as-errors;
-- reviewed version-bearing snapshots and deterministic bump-hook fixtures;
-- an isolated Shipshape 0.10.1 held-tag/cut/resume/verify protocol at the pinned upstream commit;
-- strict release authorization, wrapper, publish-order, topology, activation, live-ruleset, and issue-health fixtures;
-- a stripped-PATH all-workspace nextest run;
-- all three `cargo package --workspace --no-verify` archives and disposable Cargo installs for the canonical and compatibility binaries;
-- exact cargo-dist 0.28.2 generation/plan validation plus disposable archive, shell-installer, and Homebrew 6.0.21 drills;
-- canonical source metadata, exact intra-workspace pins, and the expected single R11-only old-tap README residue;
-- Shipshape contract validation, audit, and a sealed non-mutating minor plan to 0.6.0;
-- same-repository hosted Linux/macOS and self-hosted ARM64 macOS CI, including the checksum-pinned cargo-dist topology job;
-- postflight confirmation that v0.6.0 remains absent from all three crates, tags, and GitHub Releases.
+The v0.6.1 tag and protected authorization ref both resolve to `7e93bd6195fbaf6de0b43d9161228ae2373ab5d1`; exact-main CI `34020144153` passed before tag publication. Both independent tag workflows then passed:
 
-No cargo-dist release workflow ran for the PR; the exact-head workflow list contains only the successful CI run. CI produced no artifacts, which is expected for this validation workflow.
+- crates workflow `34020495272` published all three packages in dependency order;
+- cargo-dist workflow `34020495260` published the GitHub Release, all release assets, and the canonical formula.
 
-## Review disposition
+Shipshape journal `01M1TTRXNXK6FPQJK3F92B9AXA` is `completed` at sequence/applied sequence 51 with all five configured targets `matches`. Its direct resume occurred after the tag was already public and after 5/5 read-only verification. It could not bypass the pre-tag gate and did not republish.
 
-Two adversarial rounds and a context follow-up were assessed in `evidence/assessment.{json,md}`. Every confirmed in-scope release-safety or evidence gap was fixed. The retained constraints are explicit upstream/trust-boundary facts: cargo-dist 0.28.2 emits workflow-wide `contents: write`, its host tolerates skipped local jobs, and a repository administrator remains the policy authority. No review residual met the bar for a new issue.
+## Independent public reconciliation
 
-## v0.6.0 publication failure and fix-forward
+Fresh queries used the declared non-default User-Agent `taskfleet-r10-evidence/1.0 (https://github.com/jarimustonen/taskfleet)` and failed on any disagreement. `evidence/final/public-state.json` records:
 
-The conductor subsequently authorized and pushed immutable tag `v0.6.0` at `57f6dfb83401694399b363de5d3aa88e4541a22c` after exact-main CI run `34016341659`. Both independent publication workflows failed closed in the authorization gate before publication:
+- HTTP 404 for every v0.6.0 package version and the v0.6.0 GitHub Release;
+- the two-commit canonical tap history going directly from the empty proof commit to the v0.6.1 formula, with no v0.6.0 formula;
+- all three v0.6.1 crates non-yanked, downloaded bytes matching registry checksums, `.cargo_vcs_info.json` at the exact release commit, and exact `=0.6.1` dependency pins;
+- GitHub Release target, metadata, complete asset names/sizes/API IDs, and downloaded SHA-256 values matching GitHub's asset digests;
+- every nonblank `sha256.sum` entry matching its downloaded asset (the cargo-dist blank separator line is formatting only);
+- canonical formula version/archive digest and tap head `c9e68594340b2b775d23159a3545d53f15306471`;
+- unchanged old-tap head `85ce830378f38cf17283efddd966d5754354e403` and its still-live 0.5.1 formula.
 
-- crates workflow `34016740702`, gate job `101441707888`;
-- cargo-dist workflow `34016740704`, build jobs `101441745244`, `101441745248`, and `101441745351`.
+The downloaded macOS archive contained `taskfleet` and no `orchestratectl`; its runtime reported version 0.6.1 and embedded commit `7e93bd6195fbaf6de0b43d9161228ae2373ab5d1`. The legacy installer stub exited 1, pointed to the canonical installer, and did not mutate its disposable home. The canonical shell installer installed only `taskfleet` into a disposable `CARGO_HOME`, with the same runtime identity.
 
-No crate, release asset, GitHub Release, or Homebrew formula was published. The tag and its authorization ref remain immutable and must not be reused.
+## Fresh disposable Homebrew proof
 
-The failures had two concrete causes. GitHub-hosted jq 1.6 rejected the filter variable `$include` because `include` is reserved. On the self-hosted macOS jq 1.8.2 runner the workflow `GITHUB_TOKEN` could read the public ruleset shape, but GitHub redacted `bypass_actors`; that field requires repository Administration read, which is not a grantable `GITHUB_TOKEN` permission. The focused fix-forward issue `@taskfleet-release-gate-ci-portability` changes the jq variable, provides the already SOPS-managed release credential only to push/tag authorization steps, adds non-secret diagnostics and fixtures, and targets a fresh v0.6.1 transaction. It does not retroactively make v0.6.0 published.
+`evidence/final/verify-homebrew-install.sh` cloned Homebrew into a freshly created non-`/tmp` prefix under the user's cache area, isolated `HOME` and `HOMEBREW_CACHE`, disabled auto-update/analytics/cleanup, bounded every Homebrew command to 300 seconds, and cleaned the root on every exit. It used the public canonical tap, explicitly trusted it non-interactively, and never accessed the user's system taps or Cellar.
 
-## Remaining conductor gate
+The fresh canonical installation passed: Homebrew installed exactly one formula (`taskfleet`), exposed only the `taskfleet` command, and the binary reported 0.6.1 with the exact embedded release commit. After uninstall, the disposable Cellar and formula list were empty and neither command link remained. The receipt is `evidence/final/homebrew-install-result.txt`. Earlier `/tmp` refusal and stalled cache-prefix attempts are diagnostics only and are not represented as passes.
 
-After the focused portability fix merges, the conductor must wait for green push CI on that exact merged `main` SHA and create a new sealed patch plan before invoking the wrapper for v0.6.1. Phase C remains unchecked for that new coordinate; this document does not authorize a release action or reuse of v0.6.0.
+## Boundary and authorization
+
+No source/release-workflow change, tag, publication, tap mutation, global install, skill install, dependent-repository edit, or real user-state migration occurred in this final-evidence worker. The old tap remains deliberately unchanged for R11.
+
+The checksummed `evidence/final/index.json` covers every final receipt and its collector/verifier. `evidence/final/verify-evidence.sh`, `issuectl doctor --json`, and `git diff --check` passed. This closes R10 through the successful v0.6.1 fix-forward and authorizes only ADR 0002 R11 (old-tap Homebrew migration), not post-live dependent-repository convergence.

@@ -1,0 +1,839 @@
+{
+  "schema_version": 1,
+  "collected_at": "2026-09-06T08:53:14Z",
+  "runs": [
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34016341659,
+      "name": "CI",
+      "workflowName": "CI",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T06:23:04Z",
+      "updatedAt": "2026-09-06T06:31:45Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659",
+      "jobs": [
+        {
+          "databaseId": 101440664175,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:07Z",
+          "completedAt": "2026-09-06T06:23:20Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664175"
+        },
+        {
+          "databaseId": 101440664257,
+          "name": "test (self-hosted-macos-arm64)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:07Z",
+          "completedAt": "2026-09-06T06:30:29Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664257"
+        },
+        {
+          "databaseId": 101440664266,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:07Z",
+          "completedAt": "2026-09-06T06:28:18Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664266"
+        },
+        {
+          "databaseId": 101440664281,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:08Z",
+          "completedAt": "2026-09-06T06:23:40Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664281"
+        },
+        {
+          "databaseId": 101440664285,
+          "name": "cargo-deny",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:08Z",
+          "completedAt": "2026-09-06T06:23:30Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664285"
+        },
+        {
+          "databaseId": 101440664296,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:07Z",
+          "completedAt": "2026-09-06T06:23:38Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664296"
+        },
+        {
+          "databaseId": 101440664303,
+          "name": "release topology (cargo-dist 0.28.2)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:08Z",
+          "completedAt": "2026-09-06T06:23:21Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664303"
+        },
+        {
+          "databaseId": 101440664305,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:07Z",
+          "completedAt": "2026-09-06T06:23:38Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664305"
+        },
+        {
+          "databaseId": 101440664330,
+          "name": "version-snapshots",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:08Z",
+          "completedAt": "2026-09-06T06:23:17Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664330"
+        },
+        {
+          "databaseId": 101440664389,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:23:15Z",
+          "completedAt": "2026-09-06T06:31:44Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016341659/job/101440664389"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34016740702,
+      "name": "Publish to crates.io",
+      "workflowName": "Publish to crates.io",
+      "event": "push",
+      "headBranch": "v0.6.0",
+      "headSha": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-09-06T06:32:08Z",
+      "updatedAt": "2026-09-06T06:38:40Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702",
+      "jobs": [
+        {
+          "databaseId": 101441707813,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:12Z",
+          "completedAt": "2026-09-06T06:32:27Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707813"
+        },
+        {
+          "databaseId": 101441707862,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:49Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707862"
+        },
+        {
+          "databaseId": 101441707888,
+          "name": "release topology and version",
+          "status": "completed",
+          "conclusion": "failure",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:25Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707888"
+        },
+        {
+          "databaseId": 101441707896,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:12Z",
+          "completedAt": "2026-09-06T06:32:43Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707896"
+        },
+        {
+          "databaseId": 101441707897,
+          "name": "version snapshots",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:15Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707897"
+        },
+        {
+          "databaseId": 101441707900,
+          "name": "cargo-deny",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:42Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707900"
+        },
+        {
+          "databaseId": 101441707901,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:14Z",
+          "completedAt": "2026-09-06T06:37:57Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707901"
+        },
+        {
+          "databaseId": 101441707928,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:46Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707928"
+        },
+        {
+          "databaseId": 101441707942,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:16Z",
+          "completedAt": "2026-09-06T06:38:39Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101441707942"
+        },
+        {
+          "databaseId": 101442489879,
+          "name": "package archives (inspection only)",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:38:39Z",
+          "completedAt": "2026-09-06T06:38:39Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101442489879"
+        },
+        {
+          "databaseId": 101442489967,
+          "name": "crates.io / taskfleet-core",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:38:39Z",
+          "completedAt": "2026-09-06T06:38:39Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101442489967"
+        },
+        {
+          "databaseId": 101442489972,
+          "name": "crates.io / taskfleet",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:38:39Z",
+          "completedAt": "2026-09-06T06:38:39Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101442489972"
+        },
+        {
+          "databaseId": 101442490205,
+          "name": "crates.io / orchestratectl compatibility wrapper",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:38:40Z",
+          "completedAt": "2026-09-06T06:38:39Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740702/job/101442490205"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34016740704,
+      "name": "Release",
+      "workflowName": "Release",
+      "event": "push",
+      "headBranch": "v0.6.0",
+      "headSha": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-09-06T06:32:08Z",
+      "updatedAt": "2026-09-06T06:32:50Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704",
+      "jobs": [
+        {
+          "databaseId": 101441707686,
+          "name": "plan",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T06:32:11Z",
+          "completedAt": "2026-09-06T06:32:28Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441707686"
+        },
+        {
+          "databaseId": 101441745244,
+          "name": "build-local-artifacts (x86_64-unknown-linux-gnu)",
+          "status": "completed",
+          "conclusion": "failure",
+          "startedAt": "2026-09-06T06:32:31Z",
+          "completedAt": "2026-09-06T06:32:40Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441745244"
+        },
+        {
+          "databaseId": 101441745248,
+          "name": "build-local-artifacts (aarch64-unknown-linux-gnu)",
+          "status": "completed",
+          "conclusion": "failure",
+          "startedAt": "2026-09-06T06:32:30Z",
+          "completedAt": "2026-09-06T06:32:37Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441745248"
+        },
+        {
+          "databaseId": 101441745351,
+          "name": "build-local-artifacts (aarch64-apple-darwin)",
+          "status": "completed",
+          "conclusion": "failure",
+          "startedAt": "2026-09-06T06:32:31Z",
+          "completedAt": "2026-09-06T06:32:49Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441745351"
+        },
+        {
+          "databaseId": 101441790538,
+          "name": "publish-homebrew-formula",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:32:50Z",
+          "completedAt": "2026-09-06T06:32:50Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441790538"
+        },
+        {
+          "databaseId": 101441790552,
+          "name": "build-global-artifacts",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:32:50Z",
+          "completedAt": "2026-09-06T06:32:50Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441790552"
+        },
+        {
+          "databaseId": 101441790627,
+          "name": "host",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:32:50Z",
+          "completedAt": "2026-09-06T06:32:50Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441790627"
+        },
+        {
+          "databaseId": 101441790764,
+          "name": "announce",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T06:32:50Z",
+          "completedAt": "2026-09-06T06:32:50Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34016740704/job/101441790764"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34020144153,
+      "name": "CI",
+      "workflowName": "CI",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T07:48:43Z",
+      "updatedAt": "2026-09-06T07:56:22Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153",
+      "jobs": [
+        {
+          "databaseId": 101451090214,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:49:29Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090214"
+        },
+        {
+          "databaseId": 101451090317,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:49:14Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090317"
+        },
+        {
+          "databaseId": 101451090327,
+          "name": "release topology (cargo-dist 0.28.2)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:48:55Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090327"
+        },
+        {
+          "databaseId": 101451090335,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:51Z",
+          "completedAt": "2026-09-06T07:56:14Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090335"
+        },
+        {
+          "databaseId": 101451090344,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:49:00Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090344"
+        },
+        {
+          "databaseId": 101451090355,
+          "name": "version-snapshots",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:48:54Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090355"
+        },
+        {
+          "databaseId": 101451090368,
+          "name": "test (self-hosted-macos-arm64)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:56:21Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090368"
+        },
+        {
+          "databaseId": 101451090381,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:54:19Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090381"
+        },
+        {
+          "databaseId": 101451090396,
+          "name": "cargo-deny",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:49:05Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090396"
+        },
+        {
+          "databaseId": 101451090490,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:48:46Z",
+          "completedAt": "2026-09-06T07:49:17Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020144153/job/101451090490"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34020495260,
+      "name": "Release",
+      "workflowName": "Release",
+      "event": "push",
+      "headBranch": "v0.6.1",
+      "headSha": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T07:56:51Z",
+      "updatedAt": "2026-09-06T08:01:08Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260",
+      "jobs": [
+        {
+          "databaseId": 101452058737,
+          "name": "plan",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:07Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452058737"
+        },
+        {
+          "databaseId": 101452091215,
+          "name": "build-local-artifacts (aarch64-unknown-linux-gnu)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:57:11Z",
+          "completedAt": "2026-09-06T07:59:25Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452091215"
+        },
+        {
+          "databaseId": 101452091241,
+          "name": "build-local-artifacts (x86_64-unknown-linux-gnu)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:57:11Z",
+          "completedAt": "2026-09-06T07:59:19Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452091241"
+        },
+        {
+          "databaseId": 101452091251,
+          "name": "build-local-artifacts (aarch64-apple-darwin)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:57:11Z",
+          "completedAt": "2026-09-06T07:58:36Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452091251"
+        },
+        {
+          "databaseId": 101452363276,
+          "name": "build-global-artifacts",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:59:28Z",
+          "completedAt": "2026-09-06T07:59:45Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452363276"
+        },
+        {
+          "databaseId": 101452402456,
+          "name": "host",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:59:49Z",
+          "completedAt": "2026-09-06T08:00:08Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452402456"
+        },
+        {
+          "databaseId": 101452448219,
+          "name": "publish-homebrew-formula",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:00:12Z",
+          "completedAt": "2026-09-06T08:00:59Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452448219"
+        },
+        {
+          "databaseId": 101452577456,
+          "name": "announce",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:01:03Z",
+          "completedAt": "2026-09-06T08:01:08Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495260/job/101452577456"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/taskfleet",
+      "databaseId": 34020495272,
+      "name": "Publish to crates.io",
+      "workflowName": "Publish to crates.io",
+      "event": "push",
+      "headBranch": "v0.6.1",
+      "headSha": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T07:56:51Z",
+      "updatedAt": "2026-09-06T08:06:17Z",
+      "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272",
+      "jobs": [
+        {
+          "databaseId": 101452058747,
+          "name": "protected release authorization",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:09Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058747"
+        },
+        {
+          "databaseId": 101452058812,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:10Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058812"
+        },
+        {
+          "databaseId": 101452058832,
+          "name": "cargo-deny",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:14Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058832"
+        },
+        {
+          "databaseId": 101452058837,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:56Z",
+          "completedAt": "2026-09-06T08:04:58Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058837"
+        },
+        {
+          "databaseId": 101452058847,
+          "name": "release topology and version",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:10Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058847"
+        },
+        {
+          "databaseId": 101452058852,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:26Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058852"
+        },
+        {
+          "databaseId": 101452058863,
+          "name": "version snapshots",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:56Z",
+          "completedAt": "2026-09-06T07:57:01Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058863"
+        },
+        {
+          "databaseId": 101452058872,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:56Z",
+          "completedAt": "2026-09-06T08:02:34Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058872"
+        },
+        {
+          "databaseId": 101452058887,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:38Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058887"
+        },
+        {
+          "databaseId": 101452058928,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T07:56:55Z",
+          "completedAt": "2026-09-06T07:57:37Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101452058928"
+        },
+        {
+          "databaseId": 101453080344,
+          "name": "crates.io / taskfleet-core",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:05:01Z",
+          "completedAt": "2026-09-06T08:05:21Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101453080344"
+        },
+        {
+          "databaseId": 101453081238,
+          "name": "package archives (inspection only)",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "2026-09-06T08:04:59Z",
+          "completedAt": "2026-09-06T08:04:58Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101453081238"
+        },
+        {
+          "databaseId": 101453130394,
+          "name": "crates.io / taskfleet",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:05:24Z",
+          "completedAt": "2026-09-06T08:05:50Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101453130394"
+        },
+        {
+          "databaseId": 101453190812,
+          "name": "crates.io / orchestratectl compatibility wrapper",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:05:53Z",
+          "completedAt": "2026-09-06T08:06:16Z",
+          "url": "https://github.com/jarimustonen/taskfleet/actions/runs/34020495272/job/101453190812"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/ossctl",
+      "databaseId": 34021860186,
+      "name": "CI",
+      "workflowName": "CI",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "bf29567d7d94fac29d8c50df2c86e09297826cfa",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T08:26:33Z",
+      "updatedAt": "2026-09-06T08:27:51Z",
+      "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186",
+      "jobs": [
+        {
+          "databaseId": 101455783652,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:26:52Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783652"
+        },
+        {
+          "databaseId": 101455783777,
+          "name": "skill↔CLI lockstep (§17)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:14Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783777"
+        },
+        {
+          "databaseId": 101455783778,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:03Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783778"
+        },
+        {
+          "databaseId": 101455783784,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:12Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783784"
+        },
+        {
+          "databaseId": 101455783792,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:22Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783792"
+        },
+        {
+          "databaseId": 101455783826,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:50Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783826"
+        },
+        {
+          "databaseId": 101455783873,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:26:37Z",
+          "completedAt": "2026-09-06T08:27:08Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34021860186/job/101455783873"
+        }
+      ]
+    },
+    {
+      "repository": "jarimustonen/ossctl",
+      "databaseId": 34022689350,
+      "name": "CI",
+      "workflowName": "CI",
+      "event": "push",
+      "headBranch": "main",
+      "headSha": "88f2b98d3411a7de469545c76007bd37f3c3fcd3",
+      "status": "completed",
+      "conclusion": "success",
+      "createdAt": "2026-09-06T08:44:13Z",
+      "updatedAt": "2026-09-06T08:45:34Z",
+      "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350",
+      "jobs": [
+        {
+          "databaseId": 101458044551,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:44:40Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044551"
+        },
+        {
+          "databaseId": 101458044609,
+          "name": "clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:44:46Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044609"
+        },
+        {
+          "databaseId": 101458044615,
+          "name": "test (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:17Z",
+          "completedAt": "2026-09-06T08:45:33Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044615"
+        },
+        {
+          "databaseId": 101458044634,
+          "name": "test (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:45:00Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044634"
+        },
+        {
+          "databaseId": 101458044653,
+          "name": "rustfmt",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:44:30Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044653"
+        },
+        {
+          "databaseId": 101458044683,
+          "name": "skill↔CLI lockstep (§17)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:44:53Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044683"
+        },
+        {
+          "databaseId": 101458044711,
+          "name": "msrv (1.85)",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-09-06T08:44:16Z",
+          "completedAt": "2026-09-06T08:44:55Z",
+          "url": "https://github.com/jarimustonen/ossctl/actions/runs/34022689350/job/101458044711"
+        }
+      ]
+    }
+  ],
+  "source_fix_commits": {
+    "tracked_helper_observation": {
+      "implementation": "dc1bdf8",
+      "main_receipt": "bf29567d7d94fac29d8c50df2c86e09297826cfa",
+      "ci_run_id": 34021860186
+    },
+    "gnu_homebrew_verification": {
+      "implementation": "a7b2ae1",
+      "main_receipt": "88f2b98d3411a7de469545c76007bd37f3c3fcd3",
+      "ci_run_id": 34022689350
+    }
+  }
+}

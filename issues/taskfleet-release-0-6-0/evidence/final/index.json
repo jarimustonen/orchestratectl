@@ -1,0 +1,56 @@
+{
+  "artifacts": [
+    {
+      "bytes": 2442,
+      "path": "README.md",
+      "sha256": "a5642b54a2aee54f0d171a06db6917c33212a443bd4bef723419ff99ea8196ae"
+    },
+    {
+      "bytes": 12330,
+      "path": "collect-public-evidence.py",
+      "sha256": "b3c509859c86041fc5b80f5ae79f13b9bad064b15ece00767c4341b9fab1b9e5"
+    },
+    {
+      "bytes": 289,
+      "path": "homebrew-install-result.txt",
+      "sha256": "d4aa896307536b16a4d0b023894a9c1bb9322cc28c466214c146602fa431f013"
+    },
+    {
+      "bytes": 1222,
+      "path": "journal-v0.6.0.json",
+      "sha256": "4417f9be76e5462ccc60cd10b9cb45f0c43922d962aa446acea2e2a76e6f1907"
+    },
+    {
+      "bytes": 1169,
+      "path": "journal-v0.6.1.json",
+      "sha256": "55367433452431e0fbd4709ae4628ce5242e94b6f4d32fa99b96c02da9c83582"
+    },
+    {
+      "bytes": 9443,
+      "path": "public-state.json",
+      "sha256": "254efe5c415cd5c0009d32a934080d4bbd3a56d3bb0bdd5ddec0af9daf3213d8"
+    },
+    {
+      "bytes": 3634,
+      "path": "verify-evidence.sh",
+      "sha256": "10a248bd77bd7fd5998244d72d8c1e75320dd47c1e77afa07e4b53149a5bc4a0"
+    },
+    {
+      "bytes": 2852,
+      "path": "verify-homebrew-install.sh",
+      "sha256": "466b514486ca35cc381bd829bf4842ba677624e786710e5c140acd76b0423820"
+    },
+    {
+      "bytes": 32784,
+      "path": "workflows.json",
+      "sha256": "29447fa109ad44d6fc4a983709f8eda7d424c1398f665927179b93532b2bb1af"
+    }
+  ],
+  "burned_commit": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+  "burned_version": "0.6.0",
+  "generated_at": "2026-09-06T09:01:31.716201Z",
+  "overall": "pass",
+  "published_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+  "published_version": "0.6.1",
+  "schema_version": 1
+}

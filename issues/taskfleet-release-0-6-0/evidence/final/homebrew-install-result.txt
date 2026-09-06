@@ -1,0 +1,9 @@
+result=pass
+prefix_class=disposable-non-temp
+formula=jarimustonen/taskfleet/taskfleet
+version=0.6.1
+embedded_commit=7e93bd6195fbaf6de0b43d9161228ae2373ab5d1
+tap_head=c9e68594340b2b775d23159a3545d53f15306471
+installed_formulae=taskfleet
+orchestratectl_alias=absent
+uninstall_residue=absent

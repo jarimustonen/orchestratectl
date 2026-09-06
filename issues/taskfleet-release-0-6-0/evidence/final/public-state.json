@@ -1,0 +1,250 @@
+{
+  "collected_at": "2026-09-06T09:00:44.176140Z",
+  "homebrew": {
+    "canonical_formula_sha256": "44ab6275a66d85c5ab971ad3cc52e8b19451853bae2b00b4316a9fc71e7a9575",
+    "canonical_formula_version": "0.6.1",
+    "canonical_tap_head": "c9e68594340b2b775d23159a3545d53f15306471",
+    "canonical_tap_history": [
+      {
+        "committed_at": "2026-09-06T08:00:56Z",
+        "message": "taskfleet 0.6.1",
+        "sha": "c9e68594340b2b775d23159a3545d53f15306471"
+      },
+      {
+        "committed_at": "2026-09-02T12:00:00Z",
+        "message": "chore: prove Taskfleet tap token write access",
+        "sha": "db12bb163e47617f0b941a35d3896b6ba0548892"
+      }
+    ],
+    "canonical_tap_tree": "161020025cdc8f5e1f0a6a50ee00e0f0a9359b8c",
+    "old_formula_sha256": "8710f338847aaba12d938fc5b3c333e81da9e14056d8adad4fe6802beda43ec6",
+    "old_formula_version": "0.5.1",
+    "old_tap_head": "85ce830378f38cf17283efddd966d5754354e403",
+    "orchestratectl_formula_in_canonical_tap": "absent_http_404"
+  },
+  "install_checks": {
+    "archive": {
+      "embedded_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "orchestratectl_alias": "absent",
+      "result": "pass",
+      "version": "0.6.1"
+    },
+    "legacy_installer_stub": {
+      "canonical_url_message": "present",
+      "exit_code": 1,
+      "home_mutation": "absent",
+      "result": "pass"
+    },
+    "shell_installer": {
+      "embedded_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "result": "pass",
+      "version": "0.6.1"
+    }
+  },
+  "schema_version": 1,
+  "user_agent": "taskfleet-r10-evidence/1.0 (https://github.com/jarimustonen/taskfleet)",
+  "v0_6_0": {
+    "canonical_formula": "absent_from_two-commit-tap-history",
+    "commit": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+    "github_release": "absent_http_404",
+    "immutable_refs": {
+      "authorization_commit_sha": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "authorization_ref": "refs/heads/taskfleet-release-authorizations/v0.6.0",
+      "commit": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "tag_commit_sha": "57f6dfb83401694399b363de5d3aa88e4541a22c",
+      "tag_object_sha": "28c3680ef57b5823b3537f6537429f1758cce2c4",
+      "tag_ref": "refs/tags/v0.6.0"
+    },
+    "public_crates": [
+      {
+        "package": "taskfleet-core",
+        "status": "absent_http_404",
+        "version": "0.6.0"
+      },
+      {
+        "package": "taskfleet",
+        "status": "absent_http_404",
+        "version": "0.6.0"
+      },
+      {
+        "package": "orchestratectl",
+        "status": "absent_http_404",
+        "version": "0.6.0"
+      }
+    ]
+  },
+  "v0_6_1": {
+    "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+    "github_release": {
+      "assets": [
+        {
+          "content_type": "application/json",
+          "created_at": "2026-09-06T08:00:03Z",
+          "digest": "sha256:751c831d23f90c4d16a9d3cc5abdfff22c8347f8dcaab478b2b125eb8b0a13c0",
+          "id": 546908697,
+          "name": "dist-manifest.json",
+          "size": 14364
+        },
+        {
+          "content_type": "application/x-shellscript",
+          "created_at": "2026-09-06T08:00:03Z",
+          "digest": "sha256:6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b",
+          "id": 546908700,
+          "name": "orchestratectl-installer.sh",
+          "size": 459
+        },
+        {
+          "content_type": "application/octet-stream",
+          "created_at": "2026-09-06T08:00:03Z",
+          "digest": "sha256:48f16768df5b15cb4131622d18170ca7128d6a3732c51ef48bc8d933d5f66bb5",
+          "id": 546908698,
+          "name": "sha256.sum",
+          "size": 402
+        },
+        {
+          "content_type": "application/x-gtar",
+          "created_at": "2026-09-06T08:00:03Z",
+          "digest": "sha256:555799f76fc0e82772b05845741bd57ab4a7cb6171cb8afbbcfc55f892d8328e",
+          "id": 546908695,
+          "name": "source.tar.gz",
+          "size": 2176874
+        },
+        {
+          "content_type": "application/octet-stream",
+          "created_at": "2026-09-06T08:00:03Z",
+          "digest": "sha256:3e290e4dfb426540dba53d14117dd6d391bfa4373adcbc3f6ad2e36d372fdd67",
+          "id": 546908696,
+          "name": "source.tar.gz.sha256",
+          "size": 81
+        },
+        {
+          "content_type": "application/x-xz",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:4bbf3b023ae0377e8cdca41e07854cbb64165eba82ddc5ae70e1ba90386406a6",
+          "id": 546908706,
+          "name": "taskfleet-aarch64-apple-darwin.tar.xz",
+          "size": 1654388
+        },
+        {
+          "content_type": "application/octet-stream",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:c43b7d6324073b4c8ba3c8a0055362dd845403588c4dde3a1c0c212145abb5b1",
+          "id": 546908708,
+          "name": "taskfleet-aarch64-apple-darwin.tar.xz.sha256",
+          "size": 105
+        },
+        {
+          "content_type": "application/x-xz",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:3aedcaec35b2ddc789bcee8d1f934e0641dba508edb6e08e09e8d7e63b5359a3",
+          "id": 546908707,
+          "name": "taskfleet-aarch64-unknown-linux-gnu.tar.xz",
+          "size": 1600560
+        },
+        {
+          "content_type": "application/octet-stream",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:b7a1283640fd2fd3a09ade88fb064534096201a3f7a6d82d187a392fbd684b4b",
+          "id": 546908709,
+          "name": "taskfleet-aarch64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 110
+        },
+        {
+          "content_type": "application/x-shellscript",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:e2f378b91497e66eece8f789eba59f1d4544747f26dd669ad5d5db1d5ed9e77d",
+          "id": 546908721,
+          "name": "taskfleet-installer.sh",
+          "size": 43157
+        },
+        {
+          "content_type": "application/x-xz",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:6e1645f0739b1fa528e0313a18a23113d7c146a2bbb23c72aed817e5950d4c71",
+          "id": 546908722,
+          "name": "taskfleet-x86_64-unknown-linux-gnu.tar.xz",
+          "size": 1938508
+        },
+        {
+          "content_type": "application/octet-stream",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:0c7d9714b1cd89fd49dd4aab846a8ab096dad58062c03400a550e809f0fc72eb",
+          "id": 546908720,
+          "name": "taskfleet-x86_64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 109
+        },
+        {
+          "content_type": "application/x-ruby",
+          "created_at": "2026-09-06T08:00:04Z",
+          "digest": "sha256:fc61c5b65ea1ce125c1c7c360291641fef221f2a64300c6950cde15e20982354",
+          "id": 546908727,
+          "name": "taskfleet.rb",
+          "size": 2089
+        }
+      ],
+      "draft": false,
+      "id": 383508050,
+      "name": "0.6.1 - 2026-09-06",
+      "prerelease": false,
+      "published_at": "2026-09-06T08:00:05Z",
+      "tag_name": "v0.6.1",
+      "target_commitish": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "url": "https://github.com/jarimustonen/taskfleet/releases/tag/v0.6.1"
+    },
+    "immutable_refs": {
+      "authorization_commit_sha": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "authorization_ref": "refs/heads/taskfleet-release-authorizations/v0.6.1",
+      "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "tag_commit_sha": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+      "tag_object_sha": "df7ad3b660968e75bbe462880b1e0c13d807bd2e",
+      "tag_ref": "refs/tags/v0.6.1"
+    },
+    "public_crates": [
+      {
+        "checksum": "e35f405aaa54c8e25a69423ff26ce490098bc7ad90135fcb699a15cc3dacd1f6",
+        "download_sha256": "e35f405aaa54c8e25a69423ff26ce490098bc7ad90135fcb699a15cc3dacd1f6",
+        "exact_pin": null,
+        "package": "taskfleet-core",
+        "path_in_vcs": "crates/taskfleet-core",
+        "repository": "https://github.com/jarimustonen/taskfleet",
+        "rust_version": "1.85",
+        "source_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "version": "0.6.1",
+        "yanked": false
+      },
+      {
+        "checksum": "a043122163abdaa1b7f492fde2fb673f297f89d60a46aecfc185d7ffcbb75852",
+        "download_sha256": "a043122163abdaa1b7f492fde2fb673f297f89d60a46aecfc185d7ffcbb75852",
+        "exact_pin": {
+          "package": "taskfleet-core",
+          "requirement": "=0.6.1"
+        },
+        "package": "taskfleet",
+        "path_in_vcs": "crates/taskfleet",
+        "repository": "https://github.com/jarimustonen/taskfleet",
+        "rust_version": "1.85",
+        "source_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "version": "0.6.1",
+        "yanked": false
+      },
+      {
+        "checksum": "6e054ce09a4ce18be0e01da915ef06cab98e8899d1057cbc54e8b1bf29875a51",
+        "download_sha256": "6e054ce09a4ce18be0e01da915ef06cab98e8899d1057cbc54e8b1bf29875a51",
+        "exact_pin": {
+          "package": "taskfleet",
+          "requirement": "=0.6.1"
+        },
+        "package": "orchestratectl",
+        "path_in_vcs": "compat/orchestratectl",
+        "repository": "https://github.com/jarimustonen/taskfleet",
+        "rust_version": "1.85",
+        "source_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "version": "0.6.1",
+        "yanked": false
+      }
+    ]
+  }
+}

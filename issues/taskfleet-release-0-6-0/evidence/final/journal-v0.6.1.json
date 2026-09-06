@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "collected_at": "2026-09-06T08:53:27Z",
+  "run_id": "01M1TTRXNXK6FPQJK3F92B9AXA",
+  "version": "0.6.1",
+  "status": "completed",
+  "last_seq": 51,
+  "applied_seq": 51,
+  "abandon_reason": null,
+  "phases": [
+    {
+      "phase": "bump",
+      "outcome": "ok"
+    },
+    {
+      "phase": "dry_run",
+      "outcome": "ok"
+    },
+    {
+      "phase": "build",
+      "outcome": "ok"
+    },
+    {
+      "phase": "publish",
+      "outcome": "ok"
+    },
+    {
+      "phase": "tag",
+      "outcome": "ok"
+    },
+    {
+      "phase": "dist",
+      "outcome": "ok"
+    },
+    {
+      "phase": "verify",
+      "outcome": "ok"
+    },
+    {
+      "phase": "advance_branch",
+      "outcome": "ok"
+    }
+  ],
+  "tags": {
+    "v0.6.1": {
+      "created_local": true,
+      "pushed_remote": true,
+      "github_release": false,
+      "github_release_url": null,
+      "github_release_delegated": true
+    }
+  },
+  "verified": {
+    "rust:orchestratectl:crates.io": "matches",
+    "rust:taskfleet-core:crates.io": "matches",
+    "rust:taskfleet:crates.io": "matches",
+    "rust:taskfleet:gh-releases": "matches",
+    "rust:taskfleet:homebrew": "matches"
+  }
+}

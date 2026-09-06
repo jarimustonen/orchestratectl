@@ -9,64 +9,46 @@ related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 110
 collision: [repository-identity]
-blocked_by: ['@taskfleet-source-repository-rename']
 ---
 
 # Cut and verify Taskfleet 0.6.0
 
 ## Goal
 
-Complete ADR 0002 R10 end-to-end: harden and activate the canonical Taskfleet release topology after R9, run the mandatory full post-R9 exact-SHA gate, then cut and independently verify Taskfleet 0.6.0 through the repository's pinned Shipshape wrapper.
+Complete ADR 0002 R10 truthfully. The first canonical coordinate, v0.6.0, was wrapper-authorized and then burned when both independent tag workflows failed closed before publication. R10 therefore includes the successful v0.6.1 fix-forward release and verifies that every intended public channel agrees.
 
-## Preconditions
+## Preconditions and pre-cut work
 
-- R8 immutable evidence authorizes R9 only; R9 is closed after canonical rename and exact-main CI `33815467669` for `5df8359d092bcb10c26441e988617895151a12a7`.
-- GitHub source is repository ID `R_kgDOS3Iezw`, canonical `jarimustonen/taskfleet`; local origin uses the canonical SSH URL.
-- Existing public tags/releases stop at v0.5.1; canonical tap head remains prepared empty receipt `db12bb163e47617f0b941a35d3896b6ba0548892`; old tap remains `85ce830378f38cf17283efddd966d5754354e403`.
-- Release/distribution activation remains blocked and no v0.6.0 tag/package/release/formula exists.
+- [x] R9 closed after the canonical source rename; repository ID `R_kgDOS3Iezw` is `jarimustonen/taskfleet`.
+- [x] Release topology was hardened to tag-only cargo-dist operation, protected exact-commit authorization refs, independent crates/distribution gates, exact three-crate order, and the canonical Taskfleet-only Homebrew tap.
+- [x] Phase A activation and credential proofs passed without exposing secret values or mutating the old tap.
+- [x] Phase B full post-R9 candidate gate passed at `23f7fcf6d9de969300dce560538ce1f3a11f2a2a`; its exact same-repository CI was `34014432088`.
 
-## Phase A — harden and activate without publishing
+## Release transaction outcome
 
-- [x] Phase A completed: topology hardened, credentials proven, ledgers activated, and review assessed.
+### Burned v0.6.0 coordinate
 
-- Re-evaluate and close the R9 review residuals before any live activation: cargo-dist 0.28.2's generated `secrets: inherit` on the reusable gate and the blocked-tag cancellation race/permissive skipped-build host dependency.
-- Prefer generator-supported tag-only topology (`pr-run-mode = "skip"` or exact supported equivalent) that removes same-repository PR access to inherited release secrets. Do not hand-edit generated `release.yml`; regenerate with exact cargo-dist 0.28.2 and make generation/check deterministic.
-- Establish a structural fail-closed activation boundary for unauthorized/non-wrapper tags. A cancellation timing race is not sufficient. Preserve the held-tag wrapper as the only release path and keep crates/GitHub Release/Homebrew legs independent after the approved tag push.
-- Verify repository secret NAMES and required access without exposing values. Any write canary against the canonical tap must be reversible, exact-head CAS guarded, leave the tap at its preflight head, and be fully recorded. Do not mutate the old tap in R10.
-- Move release/distribution/tap-secret activation ledgers to the exact ready state only after the hardening and credential gate passes.
-- Preserve the exact three-crate publish order (`taskfleet-core` → `taskfleet` → `orchestratectl`) and single Taskfleet cargo-dist app/Homebrew identity.
-- Run adversarial review and assess findings before activation is accepted.
+- [x] The pinned wrapper advanced v0.6.0 commit `57f6dfb83401694399b363de5d3aa88e4541a22c` through exact-main CI `34016341659` and created its protected exact-commit authorization ref before pushing the tag.
+- [x] Crates workflow `34016740702` and cargo-dist workflow `34016740704` failed closed in their authorization gates. No v0.6.0 crate, GitHub Release, release asset, or canonical formula was published.
+- [x] Shipshape journal `01M1TNW3SMN0XA347D1MG4518R` is terminally abandoned at sequence 38. The v0.6.0 tag and authorization ref remain immutable at the release commit and must never be deleted, moved, or reused.
 
-## Phase B — mandatory post-R9 exact-SHA gate
+### Successful v0.6.1 fix-forward
 
-- [x] Phase B worker-owned candidate gate completed for `23f7fcf6d9de969300dce560538ce1f3a11f2a2a`; final merged-main push CI remains pending.
-
-- On one exact clean integrated candidate after Phase A, run the complete CI-equivalent Rust gate, docs, reviewed snapshots, release protocol/version/topology fixtures, stripped-PATH tests, three-crate package checks, dual-name/state migration compatibility, disposable archive/shell/Homebrew installs, Shipshape contract/audit/non-mutating 0.6.0 plan, residual/source identity scans, and public availability checks.
-- Push candidate through canonical renamed-repository CI including a self-hosted macOS proof. Record exact SHA/tree/run/job/artifact IDs and immutable sanitized evidence.
-- No tag, publish, GitHub Release, formula activation, global install, skill install, real state migration, old-tap mutation, or dependent-repository edit occurs in Phase A/B.
-- Merge activation/evidence only through Taskfleet. The final merged exact-main SHA must receive green push CI before the release cut.
-
-## Phase C — conductor-owned release transaction
-
-- [ ] Phase C remains conductor-owned and was not executed by this worker.
-
-- From synchronized clean canonical `main`, use only `scripts/shipshape-release.sh plan minor` to seal 0.6.0 and `scripts/shipshape-release.sh cut <plan-id>` to execute. The project autonomy policy removes a human approval pause, but all correctness gates remain mandatory.
-- The wrapper must own bump/version pins/lockfile/changelog, held local tag, exact bump-SHA main push CI, and resumed remote tag push. Never run `cargo publish`, bare `shipshape release cut/resume`, manual tag push, retag, or version reuse.
-- If pre-tag CI fails, abandon the run and fix forward; remove only the unpushed local tag. If the tag was pushed, publishing may be underway: resume/verify the same journal, never start another.
-- Reconcile independently completing crates.io and cargo-dist workflows. Verify all three crates at exact 0.6.0 pins, canonical GitHub Release assets/checksums/attestations/legacy installer stub, embedded commit, fresh archive/shell/Cargo installs, and canonical formula in `jarimustonen/homebrew-taskfleet`.
-- Record exact release run/plan/tag/commit/workflow/job/package/asset/formula receipts. Close only after Shipshape verification and every public destination agrees.
+- [x] The release-gate portability defects were fixed and verified before a new patch coordinate was sealed.
+- [x] v0.6.1 tag and authorization ref resolve to `7e93bd6195fbaf6de0b43d9161228ae2373ab5d1`; exact-main CI `34020144153` passed.
+- [x] Crates workflow `34020495272` published `taskfleet-core`, `taskfleet`, and the bounded `orchestratectl` wrapper in dependency order; cargo-dist workflow `34020495260` published the GitHub Release, assets, and canonical formula.
+- [x] Shipshape journal `01M1TTRXNXK6FPQJK3F92B9AXA` completed at sequence 51 with all five targets `matches`. Its post-public direct resume occurred only after 5/5 read-only reconciliation and could neither bypass the pre-tag gate nor republish.
 
 ## Acceptance Criteria
 
-- [ ] Release topology is structurally hardened and activation ledgers are ready without exposing repository secrets to PR-controlled reusable workflow code.
-- [ ] Full post-R9 integrated candidate and final merged main CI are green on recorded exact SHAs.
-- [ ] Pinned wrapper cuts exactly v0.6.0; no forbidden direct/manual release action occurs.
-- [ ] `taskfleet-core`, `taskfleet`, and bounded `orchestratectl` wrapper 0.6.0 are verified on crates.io with exact pins.
-- [ ] Canonical GitHub Release and Taskfleet-only artifacts/installers/checksums are verified.
-- [ ] Canonical Homebrew formula is live and fresh canonical installation works.
-- [ ] Old tap remains untouched for R11; no dependent repository or real user state is migrated.
-- [ ] Immutable evidence is committed and R11 is the only newly authorized migration step.
+- [x] Release topology is structurally hardened and exact-main CI is green on both immutable release commits.
+- [x] v0.6.0 is recorded as a burned, unpublished coordinate: only its immutable tag and authorization ref exist.
+- [x] v0.6.1 is available as non-yanked `taskfleet-core`, `taskfleet`, and bounded `orchestratectl` crates with registry checksums, source commit, and exact dependency pins verified.
+- [x] The v0.6.1 GitHub Release has the exact target commit and complete digest-verified Taskfleet-only asset set; archive runtime identity, shell installer, and inert legacy installer stub pass in disposable homes.
+- [x] `jarimustonen/homebrew-taskfleet` contains the v0.6.1 canonical formula, and a fresh install/uninstall in a fully disposable non-temporary prefix proves only `taskfleet` is installed, with the expected version/commit and no residue.
+- [x] The old tap remains at `85ce830378f38cf17283efddd966d5754354e403`; no dependent repository, installed user binary/skill, or real user state was migrated.
+- [x] The checksummed final evidence bundle under `evidence/final/` verifies, and the completed R10 authorizes ADR 0002 R11 only.
 
-## Recovery
+## Recovery and next authorization
 
-Fail closed before tag push. After tag push, preserve canonical identity and reconcile the existing release journal/workflows; never roll back published coordinates or retag.
+Published identities are never rolled back or reused. v0.6.0 remains a permanent burned tag receipt; v0.6.1 is the first fully published canonical Taskfleet release. R11 may now activate and verify only the prepared old-tap Homebrew migration. Dependent-repository discovery or migration remains outside this authorization and starts only after R11's own gate.
