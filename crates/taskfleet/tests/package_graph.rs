@@ -10,7 +10,7 @@ fn release_topology_has_exact_ordered_and_independent_legs() {
     )
     .expect("release topology JSON");
     assert_eq!(topology["schema_version"], 1);
-    assert_eq!(topology["activation"], "blocked-r8-r9-r10");
+    assert_eq!(topology["activation"], "ready");
     assert_eq!(topology["repository"], "jarimustonen/taskfleet");
     assert_eq!(topology["owners"], serde_json::json!(["jarimustonen"]));
     assert_eq!(
@@ -31,7 +31,7 @@ fn release_topology_has_exact_ordered_and_independent_legs() {
 }
 
 #[test]
-fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
+fn active_distribution_is_taskfleet_only_and_structurally_authorized() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let distribution: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join("release/taskfleet-distribution.json"))
@@ -39,7 +39,7 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     )
     .expect("distribution topology JSON");
     assert_eq!(distribution["schema_version"], 1);
-    assert_eq!(distribution["activation"], "prepared-blocked-r10");
+    assert_eq!(distribution["activation"], "ready");
     assert_eq!(
         distribution["cargo_dist"]["version"],
         serde_json::json!("0.28.2")
@@ -55,11 +55,21 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     );
     assert_eq!(
         distribution["cargo_dist"]["tap_secret_state"],
-        "inert-blocked-r10"
+        "active-proven-r10"
     );
+    assert_eq!(distribution["cargo_dist"]["pr_run_mode"], "skip");
     assert_eq!(
         distribution["cargo_dist"]["activation_gate"],
-        ".github/workflows/taskfleet-release-gate.yml"
+        "scripts/verify-release-tag-authorization.sh"
+    );
+    assert_eq!(
+        distribution["cargo_dist"]["authorization"],
+        "wrapper-ref-exact-tag-main-green-ci"
+    );
+    assert_eq!(distribution["cargo_dist"]["release_tag_ruleset"], 22234415);
+    assert_eq!(
+        distribution["cargo_dist"]["authorization_ref_ruleset"],
+        22234417
     );
     assert_eq!(distribution["cargo_dist"]["macos_runner"], "macOS");
     assert_eq!(
@@ -71,9 +81,17 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml"))
         .expect("generated release workflow");
     assert!(workflow.contains("push:\n    tags:"));
+    assert!(!workflow.contains("pull_request:"));
     assert!(!workflow.contains("workflow_dispatch:"));
-    assert!(workflow.contains("custom-taskfleet-release-gate:"));
-    assert!(workflow.contains("- custom-taskfleet-release-gate"));
+    assert!(!workflow.contains("secrets: inherit"));
+    assert!(!workflow.contains("custom-taskfleet-release-gate"));
+    assert_eq!(
+        workflow
+            .matches("name: \"Require wrapper-authorized exact-main release tag\"")
+            .count(),
+        1
+    );
+    assert!(workflow.contains("run: \"./scripts/verify-release-tag-authorization.sh\""));
     assert_eq!(
         workflow
             .matches("repository: \"jarimustonen/homebrew-taskfleet\"")
@@ -88,16 +106,11 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
         1
     );
 
-    let gate = std::fs::read_to_string(root.join(".github/workflows/taskfleet-release-gate.yml"))
-        .expect("cargo-dist activation gate");
-    assert!(gate.contains("./scripts/verify-release-activation.sh"));
-    assert!(gate.contains("== pull_request ]]"));
-    assert!(gate.contains("== workflow_dispatch &&"));
-    assert!(gate.contains("== dry-run ]]"));
-    assert!(gate.contains("Fail closed for tag pushes and every future event type"));
-    assert!(gate.contains("actions/runs/$GITHUB_RUN_ID/cancel"));
-    assert!(workflow.contains("\"actions\": \"write\""));
-    assert!(workflow.contains("\"contents\": \"read\""));
+    let build_setup = std::fs::read_to_string(root.join(".github/build-setup.yml"))
+        .expect("cargo-dist build setup");
+    assert!(build_setup.contains("name: Require wrapper-authorized exact-main release tag"));
+    assert!(build_setup.contains("run: ./scripts/verify-release-tag-authorization.sh"));
+    assert!(workflow.contains("\"contents\": \"write\""));
 }
 
 #[test]
