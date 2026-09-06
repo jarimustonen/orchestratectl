@@ -66,10 +66,13 @@ fn active_distribution_is_taskfleet_only_and_structurally_authorized() {
         distribution["cargo_dist"]["authorization"],
         "wrapper-ref-exact-tag-main-green-ci"
     );
-    assert_eq!(distribution["cargo_dist"]["release_tag_ruleset"], 22234415);
+    assert_eq!(
+        distribution["cargo_dist"]["release_tag_ruleset"],
+        22_234_415
+    );
     assert_eq!(
         distribution["cargo_dist"]["authorization_ref_ruleset"],
-        22234417
+        22_234_417
     );
     assert_eq!(distribution["cargo_dist"]["macos_runner"], "macOS");
     assert_eq!(
