@@ -29,7 +29,11 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/taskfleet-release-auth.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/repo/scripts" "$tmp/repo/release" "$tmp/bin"
 for tool in bash jq git awk cargo; do
-  tool_path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
+  if [[ "$tool" == git && -n "${REAL_GIT:-}" ]]; then
+    tool_path="$REAL_GIT"
+  else
+    tool_path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
+  fi
   ln -s "$tool_path" "$tmp/bin/$tool"
 done
 cp "$repo_root/scripts/verify-release-tag-authorization.sh" "$tmp/repo/scripts/"
