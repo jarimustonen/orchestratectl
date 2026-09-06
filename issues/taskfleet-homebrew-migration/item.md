@@ -2,12 +2,13 @@
 created: 2026-09-06
 updated: 2026-09-06
 type: task
-status: open
+status: done
 priority: high
 related: ['@taskfleet-release-0-6-0']
 lane: taskfleet-rename
 lane_seq: 120
 collision: [jarimustonen/homebrew-orchestratectl, issues/taskfleet-distribution-topology/old-tap-migration]
+closed: 2026-09-06
 ---
 
 # Activate and verify Taskfleet Homebrew migration
@@ -36,8 +37,14 @@ Execute ADR 0002 R11 only: activate the reviewed migration metadata in `jarimust
 
 ## Acceptance Criteria
 
-- [ ] Old tap migration commit is based on exact reviewed head/tree and is publicly reachable.
-- [ ] Canonical tap remains the sole formula implementation and old tap contains migration metadata only.
-- [ ] Fresh canonical install and every supported old-receipt/migrate/qualified path resolve to `taskfleet` v0.6.1.
-- [ ] No old binary/alias, duplicate formula ownership, system Homebrew mutation, or disposable residue remains.
-- [ ] Checksummed evidence is committed and post-live dependent-repository discovery is the only next authorized phase.
+- [x] Old tap migration commit is based on exact reviewed head/tree and is publicly reachable.
+- [x] Canonical tap remains the sole formula implementation and old tap contains migration metadata only.
+- [x] Fresh canonical install and every supported old-receipt/migrate/qualified path resolve to `taskfleet` v0.6.1.
+- [x] No old binary/alias, duplicate formula ownership, system Homebrew mutation, or disposable residue remains.
+- [x] Checksummed evidence is committed and post-live dependent-repository discovery is the only next authorized phase.
+
+## Resolution
+
+### 2026-09-06T10:04:55Z · @issuectl
+
+R11 passed against the actual public taps. Immutable checksummed evidence is under evidence/final/. This authorizes only ADR 0002 E1 post-live dependent-repository owner discovery; it does not authorize blind replacement, repository migration, deployment, installed skill/binary changes, or user-state migration.

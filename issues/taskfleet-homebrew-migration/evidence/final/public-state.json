@@ -1,0 +1,81 @@
+{
+  "canonical_tap": {
+    "default_branch": "main",
+    "formula_sha256": "44ab6275a66d85c5ab971ad3cc52e8b19451853bae2b00b4316a9fc71e7a9575",
+    "formula_urls": {
+      "aarch64-apple-darwin": {
+        "sha256": "4bbf3b023ae0377e8cdca41e07854cbb64165eba82ddc5ae70e1ba90386406a6",
+        "url": "https://github.com/jarimustonen/taskfleet/releases/download/v0.6.1/taskfleet-aarch64-apple-darwin.tar.xz"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "sha256": "3aedcaec35b2ddc789bcee8d1f934e0641dba508edb6e08e09e8d7e63b5359a3",
+        "url": "https://github.com/jarimustonen/taskfleet/releases/download/v0.6.1/taskfleet-aarch64-unknown-linux-gnu.tar.xz"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "sha256": "6e1645f0739b1fa528e0313a18a23113d7c146a2bbb23c72aed817e5950d4c71",
+        "url": "https://github.com/jarimustonen/taskfleet/releases/download/v0.6.1/taskfleet-x86_64-unknown-linux-gnu.tar.xz"
+      }
+    },
+    "formula_version": "0.6.1",
+    "head": "c9e68594340b2b775d23159a3545d53f15306471",
+    "inventory": [
+      {
+        "path": "Formula",
+        "sha": "44816f90cf5fe5e6a0a4263d75511dcba090ee90",
+        "type": "tree"
+      },
+      {
+        "path": "Formula/taskfleet.rb",
+        "sha": "0ebb53a4240f807bb99b1db8ca04af868e2fbb0f",
+        "size": 2087,
+        "type": "blob"
+      }
+    ],
+    "repository": "jarimustonen/homebrew-taskfleet",
+    "repository_id": 1355125556,
+    "tree": "161020025cdc8f5e1f0a6a50ee00e0f0a9359b8c"
+  },
+  "collected_at": "2026-09-06T10:03:55.993649Z",
+  "old_tap": {
+    "default_branch": "main",
+    "head": "20a70f463e699af5ddba6f6455c20a183c496ca5",
+    "inventory": [
+      {
+        "path": "README.md",
+        "sha": "aa36c14b30a38b505f40e7a1a411fa65393e9d3a",
+        "size": 103,
+        "type": "blob"
+      },
+      {
+        "path": "tap_migrations.json",
+        "sha": "8d47427c2dd1a994b76fedfa9e6054ce045d9832",
+        "size": 59,
+        "type": "blob"
+      }
+    ],
+    "migration": {
+      "orchestratectl": "jarimustonen/taskfleet/taskfleet"
+    },
+    "migration_sha256": "472e25498a09e076c7f835a2f30aba355e75c7e7d9dc60828ca8e3347717874a",
+    "parent": "85ce830378f38cf17283efddd966d5754354e403",
+    "repository": "jarimustonen/homebrew-orchestratectl",
+    "repository_id": 1322902240,
+    "tree": "059ef99bd96fd0a89bb0e687c53dba2fe6d7a652"
+  },
+  "overall": "pass",
+  "ownership": {
+    "canonical_identity": "jarimustonen/taskfleet/taskfleet",
+    "count": 1,
+    "formula_implementations": [
+      "Formula/taskfleet.rb"
+    ],
+    "orchestratectl_binary_or_alias_in_formula": "absent",
+    "orchestratectl_formula": "absent"
+  },
+  "runtime_expected": {
+    "embedded_commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+    "version": "0.6.1"
+  },
+  "schema_version": 1,
+  "user_agent": "taskfleet-r11-evidence/1.0 (https://github.com/jarimustonen/taskfleet)"
+}

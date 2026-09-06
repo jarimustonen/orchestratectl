@@ -1,0 +1,1084 @@
+{
+  "direct_after_migration": {
+    "command": "brew install jarimustonen/taskfleet/taskfleet",
+    "final_uninstall_residue": "absent",
+    "ownership": {
+      "brew_list_formula_projection": [
+        "taskfleet"
+      ],
+      "formula_files": [
+        "jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb"
+      ],
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "orchestratectl_binary_or_alias": "absent",
+      "physical_racks": [
+        "taskfleet"
+      ],
+      "physical_versions": [
+        "0.6.1"
+      ]
+    },
+    "receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/taskfleet",
+        "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.6.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1788681505,
+      "time": 1788688984,
+      "unused_options": [],
+      "used_options": []
+    },
+    "result": "pass",
+    "runtime": {
+      "data": {
+        "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "schema_version": 1,
+        "skills": [
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-run-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-spawn-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-merge",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-research",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-technical-decision",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-bug-analysis",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-status",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-start",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-handoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "fan-out",
+            "schema_version": 1
+          }
+        ],
+        "state_schema_version": 1,
+        "supported_schemas": [
+          1
+        ],
+        "supported_schemas_by_name": {
+          "config": [
+            2
+          ],
+          "envelope": [
+            1
+          ],
+          "help": [
+            3
+          ],
+          "skill": [
+            1
+          ],
+          "state": [
+            1
+          ]
+        },
+        "supported_state_schemas": [
+          1
+        ],
+        "version": "0.6.1"
+      },
+      "schema_version": 1,
+      "warnings": []
+    }
+  },
+  "explicit_migrate_after_automatic": {
+    "command": "brew migrate orchestratectl",
+    "exit_status": 0,
+    "sanitized_message": "",
+    "semantics": "automatic update already consumed migration"
+  },
+  "fresh_canonical": {
+    "command": "brew install jarimustonen/taskfleet/taskfleet",
+    "info": {
+      "casks": [],
+      "formulae": [
+        {
+          "aliases": [],
+          "autobump": true,
+          "bottle": {},
+          "build_dependencies": [],
+          "caveats": null,
+          "compatibility_version": null,
+          "conflicts_with": [],
+          "conflicts_with_reasons": [],
+          "dependencies": [],
+          "deprecate_args": null,
+          "deprecated": false,
+          "deprecation_date": null,
+          "deprecation_reason": null,
+          "deprecation_replacement_cask": null,
+          "deprecation_replacement_formula": null,
+          "desc": "Taskfleet CLI for orchestrating AI-agent workflows on a developer's machine.",
+          "disable_args": null,
+          "disable_date": null,
+          "disable_reason": null,
+          "disable_replacement_cask": null,
+          "disable_replacement_formula": null,
+          "disabled": false,
+          "full_name": "jarimustonen/taskfleet/taskfleet",
+          "homepage": "https://github.com/jarimustonen/taskfleet",
+          "installed": [
+            {
+              "built_as_bottle": false,
+              "installed_on_request": true,
+              "poured_from_bottle": false,
+              "runtime_dependencies": [],
+              "time": 1788688811,
+              "used_options": [],
+              "version": "0.6.1"
+            }
+          ],
+          "keg_only": false,
+          "keg_only_reason": null,
+          "license": "MIT",
+          "link_overwrite": [],
+          "linked_keg": "0.6.1",
+          "name": "taskfleet",
+          "no_autobump_message": null,
+          "oldnames": [],
+          "optional_dependencies": [],
+          "options": [],
+          "outdated": false,
+          "patches": [],
+          "pinned": false,
+          "post_install_defined": false,
+          "post_install_steps": [],
+          "pour_bottle_only_if": null,
+          "recommended_dependencies": [],
+          "requirements": [],
+          "revision": 0,
+          "ruby_source_checksum": {
+            "sha256": "44ab6275a66d85c5ab971ad3cc52e8b19451853bae2b00b4316a9fc71e7a9575"
+          },
+          "ruby_source_path": "Formula/taskfleet.rb",
+          "service": null,
+          "skip_livecheck": false,
+          "tap": "jarimustonen/taskfleet",
+          "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+          "test_dependencies": [],
+          "urls": {
+            "stable": {
+              "checksum": "4bbf3b023ae0377e8cdca41e07854cbb64165eba82ddc5ae70e1ba90386406a6",
+              "revision": null,
+              "tag": null,
+              "url": "https://github.com/jarimustonen/taskfleet/releases/download/v0.6.1/taskfleet-aarch64-apple-darwin.tar.xz",
+              "using": null
+            }
+          },
+          "uses_from_macos": [],
+          "uses_from_macos_bounds": [],
+          "version_scheme": 0,
+          "versioned_formulae": [],
+          "versions": {
+            "bottle": false,
+            "head": null,
+            "stable": "0.6.1"
+          }
+        }
+      ]
+    },
+    "ownership": {
+      "brew_list_formula_projection": [
+        "taskfleet"
+      ],
+      "formula_files": [
+        "jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb"
+      ],
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "orchestratectl_binary_or_alias": "absent",
+      "physical_racks": [
+        "taskfleet"
+      ],
+      "physical_versions": [
+        "0.6.1"
+      ]
+    },
+    "receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/taskfleet",
+        "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.6.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1788681505,
+      "time": 1788688811,
+      "unused_options": [],
+      "used_options": []
+    },
+    "result": "pass",
+    "runtime": {
+      "data": {
+        "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "schema_version": 1,
+        "skills": [
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-run-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-spawn-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-merge",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-research",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-technical-decision",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-bug-analysis",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-status",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-start",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-handoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "fan-out",
+            "schema_version": 1
+          }
+        ],
+        "state_schema_version": 1,
+        "supported_schemas": [
+          1
+        ],
+        "supported_schemas_by_name": {
+          "config": [
+            2
+          ],
+          "envelope": [
+            1
+          ],
+          "help": [
+            3
+          ],
+          "skill": [
+            1
+          ],
+          "state": [
+            1
+          ]
+        },
+        "supported_state_schemas": [
+          1
+        ],
+        "version": "0.6.1"
+      },
+      "schema_version": 1,
+      "warnings": []
+    },
+    "uninstall_residue": "absent"
+  },
+  "generated_at": "2026-09-06T10:03:08Z",
+  "homebrew": {
+    "initial_head": "6a16270f25b55e8bc2619d2c0ec75adb930ee408",
+    "post_update_head": "6a16270f25b55e8bc2619d2c0ec75adb930ee408",
+    "version": "Homebrew 6.0.22-69-g6a16270"
+  },
+  "isolation": {
+    "analytics": "disabled",
+    "cache": "isolated",
+    "cellar": "isolated",
+    "cleanup": "all-roots-removed",
+    "command_timeout_seconds": 300,
+    "credentials": "runtime-only-not-retained",
+    "home": "isolated",
+    "prefix_class": "disposable-non-temporary",
+    "system_homebrew_objects": "read-only-shared-clone"
+  },
+  "old_receipt_automatic_migration": {
+    "baseline_formula": "orchestratectl",
+    "baseline_receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-orchestratectl/Formula/orchestratectl.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/orchestratectl",
+        "tap_git_head": "85ce830378f38cf17283efddd966d5754354e403",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.5.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1787489570,
+      "time": 1788688878,
+      "unused_options": [],
+      "used_options": []
+    },
+    "baseline_version": "0.5.1",
+    "commands": [
+      "brew update",
+      "brew upgrade"
+    ],
+    "destination_trusted_before_update": true,
+    "orchestratectl_binary_or_alias": "absent",
+    "ownership": {
+      "brew_list_formula_projection": [
+        "orchestratectl",
+        "taskfleet"
+      ],
+      "formula_files": [
+        "jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb"
+      ],
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "orchestratectl_binary_or_alias": "absent",
+      "physical_racks": [
+        "taskfleet"
+      ],
+      "physical_versions": [
+        "0.6.1"
+      ]
+    },
+    "post_update_formulae": "orchestratectl\ntaskfleet",
+    "post_upgrade_formulae": "orchestratectl\ntaskfleet",
+    "receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/taskfleet",
+        "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.6.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1788681505,
+      "time": 1788688910,
+      "unused_options": [],
+      "used_options": []
+    },
+    "result": "pass",
+    "runtime": {
+      "data": {
+        "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "schema_version": 1,
+        "skills": [
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-run-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-spawn-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-merge",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-research",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-technical-decision",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-bug-analysis",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-status",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-start",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-handoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "fan-out",
+            "schema_version": 1
+          }
+        ],
+        "state_schema_version": 1,
+        "supported_schemas": [
+          1
+        ],
+        "supported_schemas_by_name": {
+          "config": [
+            2
+          ],
+          "envelope": [
+            1
+          ],
+          "help": [
+            3
+          ],
+          "skill": [
+            1
+          ],
+          "state": [
+            1
+          ]
+        },
+        "supported_state_schemas": [
+          1
+        ],
+        "version": "0.6.1"
+      },
+      "schema_version": 1,
+      "warnings": []
+    }
+  },
+  "old_receipt_explicit_migration": {
+    "baseline_formula": "orchestratectl",
+    "baseline_receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-orchestratectl/Formula/orchestratectl.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/orchestratectl",
+        "tap_git_head": "85ce830378f38cf17283efddd966d5754354e403",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.5.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1787489570,
+      "time": 1788688941,
+      "unused_options": [],
+      "used_options": []
+    },
+    "baseline_version": "0.5.1",
+    "command": "brew migrate orchestratectl",
+    "migrate_message": "==> Migrating formula orchestratectl to taskfleet ==> Unlinking orchestratectl ==> Moving orchestratectl versions to <DISPOSABLE_ROOT>/prefix/Cellar/taskfleet ==> Relinking taskfleet Warning: taskfleet is outdated! To avoid broken installations, as soon as possible please run:   brew upgrade Or, if you're OK with a less reliable fix:   brew upgrade taskfleet",
+    "orchestratectl_binary_or_alias": "absent",
+    "ownership": {
+      "brew_list_formula_projection": [
+        "orchestratectl",
+        "taskfleet"
+      ],
+      "formula_files": [
+        "jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb"
+      ],
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "orchestratectl_binary_or_alias": "absent",
+      "physical_racks": [
+        "taskfleet"
+      ],
+      "physical_versions": [
+        "0.6.1"
+      ]
+    },
+    "receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/taskfleet",
+        "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.6.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1788681505,
+      "time": 1788688976,
+      "unused_options": [],
+      "used_options": []
+    },
+    "result": "pass",
+    "runtime": {
+      "data": {
+        "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "schema_version": 1,
+        "skills": [
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-run-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-spawn-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-merge",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-research",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-technical-decision",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-bug-analysis",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-status",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-start",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-handoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "fan-out",
+            "schema_version": 1
+          }
+        ],
+        "state_schema_version": 1,
+        "supported_schemas": [
+          1
+        ],
+        "supported_schemas_by_name": {
+          "config": [
+            2
+          ],
+          "envelope": [
+            1
+          ],
+          "help": [
+            3
+          ],
+          "skill": [
+            1
+          ],
+          "state": [
+            1
+          ]
+        },
+        "supported_state_schemas": [
+          1
+        ],
+        "version": "0.6.1"
+      },
+      "schema_version": 1,
+      "warnings": []
+    },
+    "update_message": "==> Updating Homebrew... ==> Homebrew's analytics have entirely moved to our InfluxDB instance in the EU. We gather less data than before and have destroyed all Google Analytics data:   https://docs.brew.sh/Analytics Please reconsider re-enabling analytics to help our volunteer maintainers with:   brew analytics on ==> Homebrew is run entirely by unpaid volunteers. Please consider donating:   https://github.com/Homebrew/brew#-donations  Updated 1 tap (jarimustonen/orchestratectl). Warning: Not automatically tapping jarimustonen/taskfleet to migrate orchestratectl as it is not a trusted tap. To complete the migration yourself, run:   brew tap jarimustonen/taskfleet   brew trust jarimustonen/taskfleet/taskfleet   brew migrate orchestratectl",
+    "update_upgrade_before_trust": "preserved old keg"
+  },
+  "old_tap_qualified": {
+    "command": "brew install jarimustonen/orchestratectl/orchestratectl",
+    "ownership": {
+      "brew_list_formula_projection": [
+        "taskfleet"
+      ],
+      "formula_files": [
+        "jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb"
+      ],
+      "installed_binaries": [
+        "taskfleet"
+      ],
+      "orchestratectl_binary_or_alias": "absent",
+      "physical_racks": [
+        "taskfleet"
+      ],
+      "physical_versions": [
+        "0.6.1"
+      ]
+    },
+    "receipt": {
+      "aliases": [],
+      "arch": "arm64",
+      "built_as_bottle": false,
+      "built_on": {
+        "clt": "26.6.0.0.1781586589",
+        "cpu_family": "arm_sotra",
+        "os": "Macintosh",
+        "os_version": "macOS 26.5",
+        "preferred_perl": "5.34",
+        "xcode": "26.3"
+      },
+      "changed_files": null,
+      "compiler": "clang",
+      "homebrew_version": "6.0.22-69-g6a16270",
+      "installed_on_request": true,
+      "loaded_from_api": false,
+      "loaded_from_internal_api": false,
+      "poured_from_bottle": false,
+      "runtime_dependencies": [],
+      "source": {
+        "path": "<DISPOSABLE_ROOT>/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet/Formula/taskfleet.rb",
+        "spec": "stable",
+        "tap": "jarimustonen/taskfleet",
+        "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+        "versions": {
+          "compatibility_version": null,
+          "head": null,
+          "stable": "0.6.1",
+          "version_scheme": 0
+        }
+      },
+      "source_modified_time": 1788681505,
+      "time": 1788688845,
+      "unused_options": [],
+      "used_options": []
+    },
+    "resolution": {
+      "casks": [],
+      "formulae": [
+        {
+          "aliases": [],
+          "autobump": true,
+          "bottle": {},
+          "build_dependencies": [],
+          "caveats": null,
+          "compatibility_version": null,
+          "conflicts_with": [],
+          "conflicts_with_reasons": [],
+          "dependencies": [],
+          "deprecate_args": null,
+          "deprecated": false,
+          "deprecation_date": null,
+          "deprecation_reason": null,
+          "deprecation_replacement_cask": null,
+          "deprecation_replacement_formula": null,
+          "desc": "Taskfleet CLI for orchestrating AI-agent workflows on a developer's machine.",
+          "disable_args": null,
+          "disable_date": null,
+          "disable_reason": null,
+          "disable_replacement_cask": null,
+          "disable_replacement_formula": null,
+          "disabled": false,
+          "full_name": "jarimustonen/taskfleet/taskfleet",
+          "homepage": "https://github.com/jarimustonen/taskfleet",
+          "installed": [],
+          "keg_only": false,
+          "keg_only_reason": null,
+          "license": "MIT",
+          "link_overwrite": [],
+          "linked_keg": null,
+          "name": "taskfleet",
+          "no_autobump_message": null,
+          "oldnames": [
+            "orchestratectl"
+          ],
+          "optional_dependencies": [],
+          "options": [],
+          "outdated": false,
+          "patches": [],
+          "pinned": false,
+          "post_install_defined": false,
+          "post_install_steps": [],
+          "pour_bottle_only_if": null,
+          "recommended_dependencies": [],
+          "requirements": [],
+          "revision": 0,
+          "ruby_source_checksum": {
+            "sha256": "44ab6275a66d85c5ab971ad3cc52e8b19451853bae2b00b4316a9fc71e7a9575"
+          },
+          "ruby_source_path": "Formula/taskfleet.rb",
+          "service": null,
+          "skip_livecheck": false,
+          "tap": "jarimustonen/taskfleet",
+          "tap_git_head": "c9e68594340b2b775d23159a3545d53f15306471",
+          "test_dependencies": [],
+          "urls": {
+            "stable": {
+              "checksum": "4bbf3b023ae0377e8cdca41e07854cbb64165eba82ddc5ae70e1ba90386406a6",
+              "revision": null,
+              "tag": null,
+              "url": "https://github.com/jarimustonen/taskfleet/releases/download/v0.6.1/taskfleet-aarch64-apple-darwin.tar.xz",
+              "using": null
+            }
+          },
+          "uses_from_macos": [],
+          "uses_from_macos_bounds": [],
+          "version_scheme": 0,
+          "versioned_formulae": [],
+          "versions": {
+            "bottle": false,
+            "head": null,
+            "stable": "0.6.1"
+          }
+        }
+      ]
+    },
+    "result": "pass",
+    "runtime": {
+      "data": {
+        "commit": "7e93bd6195fbaf6de0b43d9161228ae2373ab5d1",
+        "schema_version": 1,
+        "skills": [
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-run-overview",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "taskfleet-spawn-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-spinoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-merge",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-research",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-technical-decision",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-bug-analysis",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "worktree-status",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-start",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "stint-handoff",
+            "schema_version": 1
+          },
+          {
+            "cli_version": "0.6.1",
+            "name": "fan-out",
+            "schema_version": 1
+          }
+        ],
+        "state_schema_version": 1,
+        "supported_schemas": [
+          1
+        ],
+        "supported_schemas_by_name": {
+          "config": [
+            2
+          ],
+          "envelope": [
+            1
+          ],
+          "help": [
+            3
+          ],
+          "skill": [
+            1
+          ],
+          "state": [
+            1
+          ]
+        },
+        "supported_state_schemas": [
+          1
+        ],
+        "version": "0.6.1"
+      },
+      "schema_version": 1,
+      "warnings": []
+    },
+    "uninstall_residue": "absent"
+  },
+  "overall": "pass",
+  "schema_version": 1
+}

@@ -1,0 +1,37 @@
+{
+  "artifacts": [
+    {
+      "bytes": 4541,
+      "path": "README.md",
+      "sha256": "18b4f59b2dd4a1eec55176314be94a46a62828c5ea3bf262ce6f0983ad528d9b"
+    },
+    {
+      "bytes": 6019,
+      "path": "collect-public-state.py",
+      "sha256": "5057f2085dfff7e2dceb7902f641df747c0cb3abbf4bdbf1500d62caf98b4d9a"
+    },
+    {
+      "bytes": 31377,
+      "path": "homebrew-paths.json",
+      "sha256": "080cf91e5d065bf696ac9c5132edc52b2f6853e178edc2596b4e7e04799d7d93"
+    },
+    {
+      "bytes": 2871,
+      "path": "public-state.json",
+      "sha256": "1d959a5c8d1b15bb50f000734cd7db2aab90a047aa9cf62d590c00ce465bf4f4"
+    },
+    {
+      "bytes": 4617,
+      "path": "verify-evidence.sh",
+      "sha256": "fe9cd91474225d4959dc13d0fda666b045d838b7d8c8a75f249c8807cc5d2f97"
+    },
+    {
+      "bytes": 15327,
+      "path": "verify-homebrew-paths.sh",
+      "sha256": "64d2014447ace7ebb252f91c610b69992d66ad44c3c99b03f92e91ff4e8b9d8d"
+    }
+  ],
+  "generated_at": "2026-09-06T10:04:47.205674Z",
+  "overall": "pass",
+  "schema_version": 1
+}
