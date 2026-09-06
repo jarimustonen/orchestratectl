@@ -3,6 +3,11 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 release="$repo_root/.github/workflows/release.yml"
+publish="$repo_root/.github/workflows/publish-crates.yml"
+
+# The production policy parser is a separate fixture so malformed/redacted API
+# responses cannot be hidden by the tag-authorizer's stubbed policy boundary.
+"$repo_root/scripts/test-release-github-policy.sh" >/dev/null
 
 check_workflow() {
   local workflow="$1"
@@ -13,6 +18,8 @@ check_workflow() {
   if grep -F 'custom-taskfleet-release-gate' "$workflow" >/dev/null; then return 1; fi
   [[ "$(grep -Fc 'name: "Require wrapper-authorized exact-main release tag"' "$workflow")" -ge 1 ]] || return 1
   grep -F 'run: "./scripts/verify-release-tag-authorization.sh"' "$workflow" >/dev/null || return 1
+  [[ "$(grep -Fc '"GH_TOKEN": "${{ secrets.HOMEBREW_TAP_TOKEN }}"' "$workflow")" == 1 ]] || return 1
+  if grep -F '"GH_TOKEN": "${{ github.token }}"' "$workflow" >/dev/null; then return 1; fi
   grep -A8 '^  build-local-artifacts:' "$workflow" | grep -F 'needs:' >/dev/null || return 1
   grep -A12 '^  build-local-artifacts:' "$workflow" | grep -F 'needs.plan.outputs.publishing == '\''true'\''' >/dev/null || return 1
   grep -A8 '^  build-global-artifacts:' "$workflow" | grep -F -- '- build-local-artifacts' >/dev/null || return 1
@@ -22,6 +29,24 @@ check_workflow() {
   grep -A12 '^  host:' "$workflow" | grep -F 'needs.build-local-artifacts.result == '\''skipped'\''' >/dev/null || return 1
 }
 check_workflow "$release"
+
+# crates.io keeps its credential in a dedicated push-only job.
+# workflow_dispatch remains credential-free and can only build package archives.
+if grep -A12 '^on:' "$publish" | grep -Eq 'pull_request:'; then
+  echo "PR-triggered crates workflow unexpectedly exposes a release gate" >&2; exit 1
+fi
+[[ "$(grep -Fc 'GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}' "$publish")" == 1 ]] || {
+  echo "crates tag gate does not receive the release credential exactly once" >&2; exit 1
+}
+grep -A4 '^  release-authorization:' "$publish" | grep -F 'if: ${{ github.event_name == '\''push'\'' }}' >/dev/null || {
+  echo "crates authorization job is not restricted to tag push events" >&2; exit 1
+}
+grep -A4 '^  publish-core:' "$publish" | grep -F 'release-authorization' >/dev/null || {
+  echo "crates publication does not depend on release authorization" >&2; exit 1
+}
+if grep -F 'GH_TOKEN: ${{ github.token }}' "$publish" >/dev/null; then
+  echo "crates tag gate still uses the redacted workflow token" >&2; exit 1
+fi
 
 # The authorization script itself is exercised, not merely grepped. Every
 # independently mutable coordinate must fail closed.

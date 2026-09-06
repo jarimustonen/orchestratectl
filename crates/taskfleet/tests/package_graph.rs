@@ -108,6 +108,30 @@ fn active_distribution_is_taskfleet_only_and_structurally_authorized() {
             .count(),
         1
     );
+    assert_eq!(
+        workflow
+            .matches("\"GH_TOKEN\": \"${{ secrets.HOMEBREW_TAP_TOKEN }}\"")
+            .count(),
+        1
+    );
+    assert!(!workflow.contains("\"GH_TOKEN\": \"${{ github.token }}\""));
+
+    let publish = std::fs::read_to_string(root.join(".github/workflows/publish-crates.yml"))
+        .expect("crates release workflow");
+    assert!(!publish.contains("pull_request:"));
+    assert_eq!(
+        publish
+            .matches("GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}")
+            .count(),
+        1
+    );
+    assert!(publish.contains(
+        "release-authorization:\n    name: protected release authorization\n    if: ${{ github.event_name == 'push' }}"
+    ));
+    assert!(publish.contains(
+        "needs: [release-authorization, release-version, fmt, version-snapshots, clippy, test, msrv, doc, deny]"
+    ));
+    assert!(!publish.contains("GH_TOKEN: ${{ github.token }}"));
 
     let build_setup = std::fs::read_to_string(root.join(".github/build-setup.yml"))
         .expect("cargo-dist build setup");

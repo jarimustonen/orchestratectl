@@ -1,7 +1,10 @@
 - name: Require wrapper-authorized exact-main release tag
   shell: bash
+  # Ruleset bypass actors are visible only with repository Administration read.
+  # This workflow is generated tag-only, so the release credential is never
+  # evaluated for pull requests or other untrusted refs.
   env:
-    GH_TOKEN: ${{ github.token }}
+    GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
   run: ./scripts/verify-release-tag-authorization.sh
 - name: Remove build-account paths from Rust artifacts
   shell: bash

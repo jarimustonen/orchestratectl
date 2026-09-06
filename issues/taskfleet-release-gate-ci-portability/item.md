@@ -24,6 +24,14 @@ The public v0.6.0 tag was authorized and pushed by the pinned release wrapper at
 - cargo-dist workflow: `34016740704`, failed build jobs `101441745244`, `101441745248`, and `101441745351`.
 - Shipshape journal: `01M1TNW3SMN0XA347D1MG4518R`.
 
+## Root cause evidence
+
+- The Linux failure is a jq parser incompatibility: jq 1.6 treats `include` as a reserved module keyword, so the filter variable `$include` never compiles. The production filter now uses `$ref_pattern` and is exercised unchanged in an Ubuntu 22.04 container reporting `jq-1.6`.
+- `GET /repos/jarimustonen/taskfleet/rulesets/22234415` is publicly readable, but GitHub omits the privileged `bypass_actors` field from non-administrator responses. That is the shape returned with the workflow `GITHUB_TOKEN`; it is why jq 1.8 parsed the filter on the self-hosted macOS runner and then returned false without an API error.
+- GitHub's ruleset endpoint requires repository **Administration: read** to return bypass actors. `GITHUB_TOKEN` has no grantable Administration permission, so changing workflow `contents` permissions cannot fix the redaction.
+- A sanitized 2026-09-06 read using the Homebase SOPS-managed `HOMEBREW_TAP_TOKEN` returned HTTP 200 and exposed the required bypass-actor array for ruleset `22234415`; the token value was passed only through process environment and was neither printed nor persisted. See `credential-ruleset-read.json`.
+- The generated cargo-dist workflow is tag-only and scopes that credential to its authorization step. The crates workflow scopes it to a dedicated `release-authorization` job guarded by `github.event_name == 'push'`; `publish-core` directly needs that job. Manual package inspection receives no credential, and neither publication workflow has a pull-request path to it.
+
 ## Required outcome
 
 1. Keep v0.6.0 immutable and never retag or reuse it.

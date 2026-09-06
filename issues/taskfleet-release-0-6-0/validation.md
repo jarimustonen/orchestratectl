@@ -42,6 +42,17 @@ No cargo-dist release workflow ran for the PR; the exact-head workflow list cont
 
 Two adversarial rounds and a context follow-up were assessed in `evidence/assessment.{json,md}`. Every confirmed in-scope release-safety or evidence gap was fixed. The retained constraints are explicit upstream/trust-boundary facts: cargo-dist 0.28.2 emits workflow-wide `contents: write`, its host tolerates skipped local jobs, and a repository administrator remains the policy authority. No review residual met the bar for a new issue.
 
+## v0.6.0 publication failure and fix-forward
+
+The conductor subsequently authorized and pushed immutable tag `v0.6.0` at `57f6dfb83401694399b363de5d3aa88e4541a22c` after exact-main CI run `34016341659`. Both independent publication workflows failed closed in the authorization gate before publication:
+
+- crates workflow `34016740702`, gate job `101441707888`;
+- cargo-dist workflow `34016740704`, build jobs `101441745244`, `101441745248`, and `101441745351`.
+
+No crate, release asset, GitHub Release, or Homebrew formula was published. The tag and its authorization ref remain immutable and must not be reused.
+
+The failures had two concrete causes. GitHub-hosted jq 1.6 rejected the filter variable `$include` because `include` is reserved. On the self-hosted macOS jq 1.8.2 runner the workflow `GITHUB_TOKEN` could read the public ruleset shape, but GitHub redacted `bypass_actors`; that field requires repository Administration read, which is not a grantable `GITHUB_TOKEN` permission. The focused fix-forward issue `@taskfleet-release-gate-ci-portability` changes the jq variable, provides the already SOPS-managed release credential only to push/tag authorization steps, adds non-secret diagnostics and fixtures, and targets a fresh v0.6.1 transaction. It does not retroactively make v0.6.0 published.
+
 ## Remaining conductor gate
 
-After Taskfleet merges this branch, the conductor must wait for green push CI on the exact merged `main` SHA before invoking the Phase C wrapper. Phase C remains unchecked and no release coordinate is authorized by this document.
+After the focused portability fix merges, the conductor must wait for green push CI on that exact merged `main` SHA and create a new sealed patch plan before invoking the wrapper for v0.6.1. Phase C remains unchecked for that new coordinate; this document does not authorize a release action or reuse of v0.6.0.

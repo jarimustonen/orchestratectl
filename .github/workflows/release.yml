@@ -128,7 +128,7 @@ jobs:
         run: "./scripts/verify-release-tag-authorization.sh"
         shell: "bash"
         env:
-          "GH_TOKEN": "${{ github.token }}"
+          "GH_TOKEN": "${{ secrets.HOMEBREW_TAP_TOKEN }}"
       - name: "Remove build-account paths from Rust artifacts"
         run: "printf 'RUSTFLAGS=%s\\n' \"${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$GITHUB_WORKSPACE=/workspace --remap-path-prefix=$HOME=/build\" >> \"$GITHUB_ENV\""
         shell: "bash"

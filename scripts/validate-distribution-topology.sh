@@ -99,8 +99,25 @@ grep -F './scripts/verify-release-tag-authorization.sh' .github/workflows/publis
 ./scripts/test-release-authorization.sh >/dev/null || {
   echo "structural release authorization fixtures failed" >&2; exit 2;
 }
+[[ "$(grep -Fc '"GH_TOKEN": "${{ secrets.HOMEBREW_TAP_TOKEN }}"' .github/workflows/release.yml)" == 1 ]] || {
+  echo "generated authorization gate must use the administration-readable release credential" >&2; exit 2;
+}
 [[ "$(grep -Fc 'token: ${{ secrets.HOMEBREW_TAP_TOKEN }}' .github/workflows/release.yml)" == 1 ]] || {
-  echo "generated workflow must use the one admitted tap secret" >&2; exit 2;
+  echo "generated workflow must use the one admitted tap checkout credential" >&2; exit 2;
+}
+if grep -F '"GH_TOKEN": "${{ github.token }}"' .github/workflows/release.yml >/dev/null; then
+  echo "generated authorization gate still uses the ruleset-redacted workflow token" >&2; exit 2
+fi
+[[ "$(grep -Fc 'GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}' .github/workflows/publish-crates.yml)" == 1 ]] || {
+  echo "crates tag gate lacks its dedicated administration-readable credential" >&2; exit 2;
+}
+grep -A4 '^  release-authorization:' .github/workflows/publish-crates.yml |
+  grep -F 'if: ${{ github.event_name == '\''push'\'' }}' >/dev/null || {
+  echo "crates authorization credential is not isolated to push events" >&2; exit 2;
+}
+grep -A4 '^  publish-core:' .github/workflows/publish-crates.yml |
+  grep -F 'release-authorization' >/dev/null || {
+  echo "crates publication does not depend on authorization" >&2; exit 2;
 }
 [[ "$(grep -Fc 'runs-on: ${{ matrix.runner }}' .github/workflows/release.yml)" == 1 ]] || {
   echo "generated workflow lost the cargo-dist runner matrix" >&2; exit 2;
